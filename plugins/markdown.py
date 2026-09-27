@@ -24,7 +24,7 @@ class MarkdownPlugin(Plugin):
     def save_chapter(self, html: str, title: str, output_path: Path):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         markdown = self.convert(html, title)
-        output_path.write_text(markdown)
+        output_path.write_text(markdown, encoding="utf-8")
 
     def generate_book(
         self,
@@ -45,7 +45,7 @@ class MarkdownPlugin(Plugin):
             self.save_chapter(html, title, md_dir / md_filename)
             readme += f"- [{title}]({md_filename})\n"
 
-        (md_dir / "README.md").write_text(readme)
+        (md_dir / "README.md").write_text(readme, encoding="utf-8")
 
     def _detect_language(self, el):
         classes = el.get("class", [])

@@ -49,7 +49,7 @@ class HttpClient:
         (_abck, bm_*) — they are required to pass Akamai (see class note).
         """
         with contextlib.suppress(OSError, json.JSONDecodeError, ValueError):
-            cookies = json.loads(path.read_text())
+            cookies = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(cookies, dict):
                 return dict(cookies)
         return {}

@@ -68,7 +68,7 @@ class OutputPlugin(Plugin):
 
         # Write book_id for future reference
         meta_file = book_dir / ".book_id"
-        meta_file.write_text(book_id)
+        meta_file.write_text(book_id, encoding="utf-8")
 
         return book_dir
 
@@ -77,7 +77,7 @@ class OutputPlugin(Plugin):
         meta_file = book_dir / ".book_id"
 
         if book_dir.exists() and meta_file.exists():
-            existing_id = meta_file.read_text().strip()
+            existing_id = meta_file.read_text(encoding="utf-8").strip()
             if existing_id != book_id:
                 # Different book with same title - append book_id
                 new_name = f"{book_dir.name}-{book_id}"

@@ -53,7 +53,7 @@ class EpubPlugin(Plugin):
                 shutil.rmtree(artifact)
 
     def _write_mimetype(self, output_dir: Path):
-        (output_dir / "mimetype").write_text("application/epub+zip")
+        (output_dir / "mimetype").write_text("application/epub+zip", encoding="ascii")
 
     def _write_container_xml(self, output_dir: Path):
         content = '''<?xml version="1.0"?>
@@ -62,7 +62,7 @@ class EpubPlugin(Plugin):
     <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
   </rootfiles>
 </container>'''
-        (output_dir / "META-INF" / "container.xml").write_text(content)
+        (output_dir / "META-INF" / "container.xml").write_text(content, encoding="utf-8")
 
     def _write_content_opf(
         self,
@@ -145,7 +145,7 @@ class EpubPlugin(Plugin):
   </spine>
 </package>'''
 
-        (oebps / "content.opf").write_text(content)
+        (oebps / "content.opf").write_text(content, encoding="utf-8")
 
     def _write_toc_ncx(self, oebps: Path, book_info: dict, toc: list[dict]):
         title = html.escape(book_info.get("title", "Unknown"))
@@ -175,7 +175,7 @@ class EpubPlugin(Plugin):
   </navMap>
 </ncx>'''
 
-        (oebps / "toc.ncx").write_text(content)
+        (oebps / "toc.ncx").write_text(content, encoding="utf-8")
 
     def _write_nav_xhtml(self, oebps: Path, book_info: dict, toc: list[dict]):
         """Generate EPUB 3 navigation document (nav.xhtml)."""
@@ -198,7 +198,7 @@ class EpubPlugin(Plugin):
 </body>
 </html>'''
 
-        (oebps / "nav.xhtml").write_text(content)
+        (oebps / "nav.xhtml").write_text(content, encoding="utf-8")
 
     def _build_nav_points(self, toc_items: list[dict], play_order: int, indent: int = 4) -> tuple[str, int]:
         result = []

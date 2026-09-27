@@ -233,7 +233,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             return
 
         try:
-            config.COOKIES_FILE.write_text(json.dumps(data, indent=2))
+            config.COOKIES_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
             # Session cookies are credentials: keep them private (no-op on Windows).
             os.chmod(config.COOKIES_FILE, 0o600)
             self.kernel.http.reload_cookies()
