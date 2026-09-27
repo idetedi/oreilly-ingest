@@ -10,6 +10,37 @@ let defaultOutputDir = '';
 const chaptersCache = {};
 
 /**
+ * Escape a value for safe interpolation into HTML text or attributes.
+ */
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Minimal HTML sanitizer for remote rich text (book descriptions).
+ * Drops active elements, event-handler attributes and javascript: URLs.
+ */
+function sanitizeHtml(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script, style, iframe, object, embed, link, meta, form').forEach(el => el.remove());
+    doc.body.querySelectorAll('*').forEach(el => {
+        for (const attr of Array.from(el.attributes)) {
+            const name = attr.name.toLowerCase();
+            const value = attr.value.trim().toLowerCase();
+            if (name.startsWith('on') || ((name === 'href' || name === 'src') && value.startsWith('javascript:'))) {
+                el.removeAttribute(attr.name);
+            }
+        }
+    });
+    return doc.body.innerHTML;
+}
+
+/**
  * Get high-resolution cover URL for expanded view.
  * O'Reilly provides larger covers at /covers/urn:orm:book:{id}/400w/
  */
@@ -127,7 +158,7 @@ async function search(query) {
         if (!data.results || data.results.length === 0) {
             container.innerHTML = `
                 <div class="text-center py-16 text-zinc-500">
-                    <p class="text-lg">No books found for "${query}"</p>
+                    <p class="text-lg">No books found for "${escapeHtml(query)}"</p>
                     <p class="text-sm mt-2 text-zinc-400">Try a different search term or ISBN</p>
                 </div>
             `;
@@ -154,13 +185,16 @@ async function search(query) {
 }
 
 function createBookCardHTML(book) {
+    const title = escapeHtml(book.title);
+    const authors = escapeHtml(book.authors?.join(', ') || 'Unknown Author');
+    const coverUrl = escapeHtml(book.cover_url);
     return `
         <!-- Collapsed Summary -->
         <div class="book-summary flex items-center gap-4 p-4 cursor-pointer">
-            <img src="${book.cover_url}" alt="${book.title} cover" class="w-12 h-16 object-cover rounded shadow-sm flex-shrink-0" loading="lazy">
+            <img src="${coverUrl}" alt="${title} cover" class="w-12 h-16 object-cover rounded shadow-sm flex-shrink-0" loading="lazy">
             <div class="flex-1 min-w-0">
-                <h3 class="text-[0.9375rem] font-semibold text-zinc-900 leading-snug truncate">${book.title}</h3>
-                <p class="text-sm text-zinc-500 truncate">${book.authors?.join(', ') || 'Unknown Author'}</p>
+                <h3 class="text-[0.9375rem] font-semibold text-zinc-900 leading-snug truncate">${title}</h3>
+                <p class="text-sm text-zinc-500 truncate">${authors}</p>
             </div>
             <svg class="expand-icon w-5 h-5 text-zinc-400 flex-shrink-0 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M6 9l6 6 6-6"/>
@@ -179,10 +213,10 @@ function createBookCardHTML(book) {
             <div class="relative px-5 pb-5 pt-2 border-t border-zinc-100 animate-fade-in">
                 <!-- Book Detail -->
                 <div class="flex gap-5 py-5">
-                    <img class="w-24 h-32 object-cover rounded-lg shadow-md flex-shrink-0" src="${getHighResCoverUrl(book.id)}" alt="${book.title} cover">
+                    <img class="w-24 h-32 object-cover rounded-lg shadow-md flex-shrink-0" src="${escapeHtml(getHighResCoverUrl(book.id))}" alt="${title} cover">
                     <div class="flex-1 min-w-0">
-                        <h2 class="text-xl font-semibold text-zinc-900 leading-tight mb-1">${book.title}</h2>
-                        <p class="text-[0.9375rem] text-zinc-500 mb-3">by ${book.authors?.join(', ') || 'Unknown Author'}</p>
+                        <h2 class="text-xl font-semibold text-zinc-900 leading-tight mb-1">${title}</h2>
+                        <p class="text-[0.9375rem] text-zinc-500 mb-3">by ${authors}</p>
                         <p class="text-sm text-zinc-500 mb-0.5">
                             <span class="text-zinc-400">Publisher:</span>
                             <span class="publisher-value text-zinc-500 animate-pulse-subtle">Loading...</span>
@@ -652,7 +686,11 @@ async function expandBook(cardElement, bookId) {
         pagesEl.textContent = book.virtual_pages || 'N/A';
         pagesEl.classList.remove('animate-pulse-subtle');
 
-        descEl.innerHTML = book.description || 'No description available.';
+        if (book.description) {
+            descEl.innerHTML = sanitizeHtml(book.description);
+        } else {
+            descEl.textContent = 'No description available.';
+        }
         descEl.classList.remove('animate-pulse-subtle');
     } catch (error) {
         const descEl = expanded.querySelector('.book-description');
@@ -686,7 +724,7 @@ function renderChapters(cardElement, chapters) {
     listContainer.innerHTML = chapters.map((ch) => `
         <label class="chapter-item flex items-center gap-3 px-2 py-2 rounded-lg cursor-pointer hover:bg-zinc-100 transition-colors">
             <input type="checkbox" class="chapter-checkbox w-4 h-4 rounded border-zinc-300 text-oreilly-blue focus:ring-oreilly-blue/20" data-index="${ch.index}" checked>
-            <span class="flex-1 text-sm text-zinc-700 truncate">${ch.title || 'Chapter ' + (ch.index + 1)}</span>
+            <span class="flex-1 text-sm text-zinc-700 truncate">${escapeHtml(ch.title || 'Chapter ' + (ch.index + 1))}</span>
             ${ch.pages ? `<span class="text-xs text-zinc-400 flex-shrink-0">${ch.pages}p</span>` : ''}
         </label>
     `).join('');

@@ -1,6 +1,7 @@
 """Web server for O'Reilly Ingest."""
 
 import json
+import os
 import re
 import threading
 import traceback
@@ -38,9 +39,35 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.static_dir = Path(__file__).parent / "static"
         super().__init__(*args, directory=str(self.static_dir), **kwargs)
 
+    @staticmethod
+    def _hostname(netloc: str) -> str:
+        """Return the lowercase host part of a netloc (drops port, IPv6 brackets)."""
+        return (urlparse(f"//{netloc}").hostname or "").lower()
+
+    def _check_request_allowed(self) -> bool:
+        """Reject cross-site and DNS-rebinding requests to the local API.
+
+        - The Host header must name an allowed host (localhost by default).
+        - Browser requests carry an Origin header on POST; it must match Host.
+          Non-browser clients (curl, scripts/refresh_cookies.py) send no Origin.
+        """
+        host = self.headers.get("Host", "")
+        if self._hostname(host) not in config.ALLOWED_HOSTS:
+            self._send_json({"error": "Host not allowed"}, 403)
+            return False
+        origin = self.headers.get("Origin")
+        if self.command == "POST" and origin is not None:
+            if urlparse(origin).netloc.lower() != host.lower():
+                self._send_json({"error": "Cross-origin request rejected"}, 403)
+                return False
+        return True
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
+
+        if path.startswith("/api/") and not self._check_request_allowed():
+            return
 
         if path == "/api/status":
             self._handle_status()
@@ -61,16 +88,10 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
-    def do_OPTIONS(self):
-        """Answer CORS preflight so browser clients can POST cookies/JSON."""
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Max-Age", "86400")
-        self.end_headers()
-
     def do_POST(self):
+        if not self._check_request_allowed():
+            return
+
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8")
         data = json.loads(body) if body else {}
@@ -188,6 +209,8 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
 
         try:
             config.COOKIES_FILE.write_text(json.dumps(data, indent=2))
+            # Session cookies are credentials: keep them private (no-op on Windows).
+            os.chmod(config.COOKIES_FILE, 0o600)
             self.kernel.http.reload_cookies()
             self._send_json({"success": True})
         except Exception as e:
@@ -343,7 +366,6 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     def _send_json(self, data: dict, status: int = 200):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(data).encode())
 

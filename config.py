@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).parent
@@ -21,6 +22,12 @@ REQUEST_TIMEOUT = 30
 # throttling stalls) so a single bad response doesn't abort a whole download.
 MAX_RETRIES = 4
 RETRY_BACKOFF = 1.5
+
+# Host names the local web server answers to. Anything else is rejected to
+# block DNS-rebinding attacks. Extend with ALLOWED_HOSTS="myhost,other".
+ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1"} | {
+    h.strip().lower() for h in os.environ.get("ALLOWED_HOSTS", "").split(",") if h.strip()
+}
 
 HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
