@@ -1,6 +1,8 @@
 """Download orchestration plugin."""
 
+import json
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -55,6 +57,7 @@ class DownloadContext:
     chunk_config: ChunkConfig | None = None
     progress_callback: ProgressCallback | None = None
     cancel_check: Callable[[], bool] | None = None
+    resume: bool = True
 
     book_info: dict = field(default_factory=dict)
     toc: list[dict] = field(default_factory=list)
@@ -206,8 +209,13 @@ class DownloaderPlugin(Plugin):
         chunk_config: ChunkConfig | None = None,
         progress_callback: ProgressCallback | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        resume: bool = True,
     ) -> DownloadResult:
-        """Orchestrate full download pipeline for a book."""
+        """Orchestrate full download pipeline for a book.
+
+        With resume=True, chapters already written to the book folder by an
+        earlier run (recorded in .download_state.json) are not fetched again.
+        """
         ctx = DownloadContext(
             book_id=book_id,
             output_dir=Path(output_dir),
@@ -217,6 +225,7 @@ class DownloaderPlugin(Plugin):
             chunk_config=chunk_config,
             progress_callback=progress_callback,
             cancel_check=cancel_check,
+            resume=resume,
         )
 
         ctx.report("starting", 0)
@@ -289,14 +298,24 @@ class DownloaderPlugin(Plugin):
 
         Chapter HTML is fetched in parallel (the HTTP client's rate limiter
         still spaces the requests) but processed and written strictly in order.
+        Chapters already written by an earlier (interrupted) run are reused
+        instead of fetched again, unless resume is disabled.
         """
         chapters_plugin = self.kernel["chapters"]
         total = len(ctx.chapters)
+        state = self._load_state(ctx)
+        done = state["chapters"]
+        reusable = [self._can_reuse(ctx, ch, done) for ch in ctx.chapters]
+        if any(reusable):
+            logger.info("Resuming %s: reusing %d/%d chapters", ctx.book_id, sum(reusable), total)
         chapter_times: list[float] = []
         started = time.time()
 
         with ThreadPoolExecutor(max_workers=config.DOWNLOAD_WORKERS) as pool:
-            pending = [pool.submit(chapters_plugin.fetch_content, ch["content_url"]) for ch in ctx.chapters]
+            pending = [
+                None if reuse else pool.submit(chapters_plugin.fetch_content, ch["content_url"])
+                for ch, reuse in zip(ctx.chapters, reusable, strict=True)
+            ]
             try:
                 for i, ch in enumerate(ctx.chapters):
                     ctx.raise_if_cancelled()
@@ -308,20 +327,82 @@ class DownloaderPlugin(Plugin):
                     }
                     ctx.report("processing_chapters", pct, **position)
 
-                    self._process_chapter(ctx, ch, pending[i].result())
+                    if reusable[i]:
+                        self._reuse_chapter(ctx, ch, done[ch["filename"]])
+                        continue
 
-                    # ETA from a rolling average of the last chapters
+                    images = self._process_chapter(ctx, ch, pending[i].result())
+                    done[ch["filename"]] = {"images": images}
+                    self._save_state(ctx, state)
+
+                    # ETA from a rolling average of the last fetched chapters
                     chapter_times.append(time.time() - started)
                     started = time.time()
                     recent = chapter_times[-5:]
-                    eta = int(sum(recent) / len(recent) * (total - (i + 1)))
+                    remaining = sum(1 for reuse in reusable[i + 1 :] if not reuse)
+                    eta = int(sum(recent) / len(recent) * remaining)
                     ctx.report("processing_chapters", pct, eta_seconds=eta, **position)
             except BaseException:
                 # Don't keep fetching the remaining chapters after a failure/cancel.
                 pool.shutdown(wait=False, cancel_futures=True)
                 raise
 
-    def _process_chapter(self, ctx: DownloadContext, ch: dict, raw_html: str):
+    # -- resume state ----------------------------------------------------
+
+    _STATE_FILE = ".download_state.json"
+    _STATE_VERSION = 1
+
+    def _load_state(self, ctx: DownloadContext) -> dict:
+        """Load the per-book resume state, or start a fresh one.
+
+        The state is only trusted when it was written for the same book and
+        the same skip_images setting (which changes the chapter HTML).
+        """
+        fresh = {
+            "version": self._STATE_VERSION,
+            "book_id": ctx.book_id,
+            "skip_images": ctx.skip_images,
+            "chapters": {},
+        }
+        if not ctx.resume:
+            return fresh
+        try:
+            state = json.loads((ctx.book_dir / self._STATE_FILE).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return fresh
+        if (
+            not isinstance(state, dict)
+            or state.get("version") != self._STATE_VERSION
+            or state.get("book_id") != ctx.book_id
+            or state.get("skip_images") != ctx.skip_images
+            or not isinstance(state.get("chapters"), dict)
+        ):
+            return fresh
+        return state
+
+    def _save_state(self, ctx: DownloadContext, state: dict):
+        path = ctx.book_dir / self._STATE_FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(tmp, path)  # atomic: an interrupted write never corrupts it
+
+    def _can_reuse(self, ctx: DownloadContext, ch: dict, done: dict) -> bool:
+        xhtml = ctx.oebps / ch["filename"].replace(".html", ".xhtml")
+        return ch["filename"] in done and xhtml.exists()
+
+    def _reuse_chapter(self, ctx: DownloadContext, ch: dict, entry: dict):
+        """Register a chapter written by an earlier run without refetching it."""
+        xhtml = ctx.oebps / ch["filename"].replace(".html", ".xhtml")
+        processed = self.kernel["html_processor"].extract_body(xhtml)
+        ctx.css_urls.update(ch["stylesheets"])
+        ctx.image_urls.update(ch["images"])
+        ctx.image_urls.update(entry.get("images", []))
+        ctx.chapters_data.append((ch["filename"], ch["title"], processed))
+
+    # --------------------------------------------------------------------
+
+    def _process_chapter(self, ctx: DownloadContext, ch: dict, raw_html: str) -> list[str]:
+        """Process and write one chapter; returns the image URLs it references."""
         html_processor = self.kernel["html_processor"]
 
         # Relative path prefix based on the chapter's depth inside OEBPS
@@ -331,10 +412,11 @@ class DownloaderPlugin(Plugin):
         processed, images = html_processor.process(
             raw_html, ctx.book_id, skip_images=ctx.skip_images, path_prefix=path_prefix
         )
+        images = [url for url in images if url.startswith(("http", "/"))]
 
         ctx.css_urls.update(ch["stylesheets"])
         ctx.image_urls.update(ch["images"])
-        ctx.image_urls.update(url for url in images if url.startswith(("http", "/")))
+        ctx.image_urls.update(images)
 
         css_refs = [f"{path_prefix}Styles/Style{j:02d}.css" for j in range(len(ctx.css_urls))]
         xhtml = html_processor.wrap_xhtml(processed, css_refs, ch["title"])
@@ -344,6 +426,7 @@ class DownloaderPlugin(Plugin):
         file_path.write_text(xhtml, encoding="utf-8")
 
         ctx.chapters_data.append((ch["filename"], ch["title"], processed))
+        return images
 
     def _download_assets(self, ctx: DownloadContext):
         """Download CSS, CSS-referenced assets and images (80%-90%)."""
@@ -352,7 +435,9 @@ class DownloaderPlugin(Plugin):
         ctx.report("downloading_assets", 80)
 
         image_list = [f"{config.BASE_URL}{url}" if url.startswith("/") else url for url in ctx.image_urls]
-        ctx.css_list = list(ctx.css_urls)
+        # Sorted so StyleNN.css maps to the same URL on every run (resume reuses
+        # the files already on disk).
+        ctx.css_list = sorted(ctx.css_urls)
         css_count = len(ctx.css_list)
         total_assets = css_count + len(image_list)
 

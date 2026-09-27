@@ -1,7 +1,6 @@
 """PDF generation plugin using WeasyPrint."""
 
 import html
-import re
 import sys
 from pathlib import Path
 
@@ -324,19 +323,7 @@ class PdfPlugin(Plugin):
 
     def _extract_chapter_body(self, xhtml_path: Path) -> str:
         """Extract body content from XHTML file."""
-        content = xhtml_path.read_text(encoding="utf-8")
-
-        # Find <body> content
-        body_match = re.search(
-            r'<body[^>]*>(.*?)</body>',
-            content,
-            re.DOTALL | re.IGNORECASE,
-        )
-
-        if body_match:
-            return body_match.group(1)
-
-        return content
+        return self.kernel["html_processor"].extract_body(xhtml_path)
 
     def _load_css_files(self, oebps: Path, css_files: list[str]) -> str:
         """Load and concatenate CSS files."""
