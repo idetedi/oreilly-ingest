@@ -2,6 +2,8 @@ import re
 from pathlib import Path
 from typing import Callable
 
+from utils import image_filename
+
 from .base import Plugin
 
 
@@ -34,7 +36,7 @@ class AssetsPlugin(Plugin):
         failed = []
         total = len(urls)
         for i, url in enumerate(urls):
-            filename = url.split("/")[-1]
+            filename = image_filename(url)
             save_path = output_dir / "Images" / filename
             try:
                 self.download_image(url, save_path)

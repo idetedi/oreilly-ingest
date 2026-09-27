@@ -16,4 +16,4 @@ from .chunking import ChunkingPlugin, ChunkConfig
 # Orchestration and system plugins
 from .output import OutputPlugin
 from .system import SystemPlugin
-from .downloader import DownloaderPlugin, DownloadProgress, DownloadResult
+from .downloader import DownloadCancelled, DownloaderPlugin, DownloadProgress, DownloadResult

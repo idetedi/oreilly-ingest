@@ -948,6 +948,7 @@ async function pollProgress(cardElement) {
             if (data.markdown) filesHTML += createFileResultHTML('Markdown', data.markdown);
             if (data.plaintext) filesHTML += createFileResultHTML('Plain Text', data.plaintext);
             if (data.json) filesHTML += createFileResultHTML('JSON', data.json);
+            if (data.toon) filesHTML += createFileResultHTML('TOON', data.toon);
             if (data.chunks) filesHTML += createFileResultHTML('Chunks', data.chunks);
 
             cardElement.querySelector('.result-files').innerHTML = filesHTML;
@@ -968,12 +969,14 @@ async function pollProgress(cardElement) {
 }
 
 function createFileResultHTML(label, path) {
-    const escapedPath = path.replace(/'/g, "\\'");
+    // The path goes in a data attribute (read by the delegated click handler)
+    // rather than an inline onclick: Windows backslashes broke the JS string.
+    const safePath = escapeHtml(path);
     return `
         <div class="flex items-center gap-3 px-4 py-3 bg-zinc-50 rounded-lg text-sm">
-            <span class="font-medium text-zinc-700 min-w-[70px]">${label}</span>
-            <span class="flex-1 font-mono text-xs text-zinc-500 truncate" title="${path}">${path}</span>
-            <button class="px-2 py-1 text-xs font-medium text-oreilly-blue hover:bg-oreilly-blue-light rounded transition-colors" onclick="revealFile('${escapedPath}')">Reveal</button>
+            <span class="font-medium text-zinc-700 min-w-[70px]">${escapeHtml(label)}</span>
+            <span class="flex-1 font-mono text-xs text-zinc-500 truncate" title="${safePath}">${safePath}</span>
+            <button class="reveal-btn px-2 py-1 text-xs font-medium text-oreilly-blue hover:bg-oreilly-blue-light rounded transition-colors" data-path="${safePath}">Reveal</button>
         </div>
     `;
 }
@@ -1046,6 +1049,15 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cookie-modal').onclick = (e) => {
         if (e.target.id === 'cookie-modal') hideCookieModal();
     };
+
+    // Reveal buttons (rendered dynamically in download results)
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('.reveal-btn');
+        if (btn) {
+            e.stopPropagation();
+            revealFile(btn.dataset.path);
+        }
+    });
 
     // Search
     let searchTimeout;

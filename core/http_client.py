@@ -113,8 +113,9 @@ class HttpClient:
     def _decode_jwt_payload(token: str) -> dict | None:
         try:
             payload_b64 = token.split(".")[1]
-            padded = payload_b64 + "=" * (4 - len(payload_b64) % 4)
-            return json.loads(base64.b64decode(padded))
+            # JWTs use unpadded base64url ("-" and "_"), not standard base64.
+            padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+            return json.loads(base64.urlsafe_b64decode(padded))
         except Exception:
             return None
 

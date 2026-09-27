@@ -1,4 +1,5 @@
 import re
+from urllib.parse import quote
 
 from .base import Plugin
 import config
@@ -50,7 +51,7 @@ class BookPlugin(Plugin):
         }
 
     def _fetch_search(self, book_id: str) -> dict:
-        url = f"{config.API_V2}/search/?query={book_id}&limit=1"
+        url = f"{config.API_V2}/search/?query={quote(book_id)}&limit=1"
         data = self.http.get_json(url)
         results = data.get("results", [])
         if not results:
@@ -62,7 +63,7 @@ class BookPlugin(Plugin):
         return self.http.get_json(url)
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
-        url = f"{config.API_V2}/search/?query={query}&limit={limit}"
+        url = f"{config.API_V2}/search/?query={quote(query)}&limit={limit}"
         data = self.http.get_json(url)
         results = []
         for item in data.get("results", []):

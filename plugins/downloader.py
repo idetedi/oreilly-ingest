@@ -1,6 +1,5 @@
 """Download orchestration plugin."""
 
-import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,6 +7,10 @@ from typing import Callable
 
 from plugins.base import Plugin
 from plugins.chunking import ChunkConfig
+
+
+class DownloadCancelled(Exception):
+    """Raised when the user cancels a download in progress."""
 
 
 @dataclass
@@ -241,8 +244,9 @@ class DownloaderPlugin(Plugin):
 
         for i, ch in enumerate(chapters):
             if check_cancel():
-                self._cleanup_on_cancel(book_dir)
-                raise Exception("Download cancelled by user")
+                # Partial files are kept on purpose: removing book_dir would also
+                # delete earlier downloads of this book (same folder).
+                raise DownloadCancelled("Download cancelled by user")
 
             # Calculate percentage (chapters are 15%-80% of work)
             chapter_pct = 15 + int((i / total_chapters) * 65) if total_chapters > 0 else 15
@@ -457,8 +461,3 @@ class DownloaderPlugin(Plugin):
 
         report("completed", 100)
         return result
-
-    def _cleanup_on_cancel(self, book_dir: Path):
-        """Clean up partially downloaded book on cancellation."""
-        if book_dir.exists():
-            shutil.rmtree(book_dir)

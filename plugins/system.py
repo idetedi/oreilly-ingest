@@ -119,7 +119,9 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             if system == "Darwin":  # macOS
                 subprocess.run(["open", "-R", str(path)], check=True)
             elif system == "Windows":
-                subprocess.run(["explorer", "/select,", str(path)], check=True)
+                # explorer.exe returns exit code 1 even when it succeeds, so
+                # its return code cannot be used to detect failure.
+                subprocess.run(["explorer", "/select,", str(path)])
             else:  # Linux
                 parent = path.parent if path.is_file() else path
                 subprocess.run(["xdg-open", str(parent)], check=True)

@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from core import Kernel, create_default_kernel
 from plugins import ChunkConfig
-from plugins.downloader import DownloadProgress
+from plugins.downloader import DownloadCancelled, DownloadProgress
 import config
 
 
@@ -63,6 +63,20 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        try:
+            self._route_get()
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, 500)
+
+    def do_POST(self):
+        try:
+            self._route_post()
+        except Exception as e:
+            traceback.print_exc()
+            self._send_json({"error": str(e)}, 500)
+
+    def _route_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
 
@@ -88,13 +102,20 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         else:
             super().do_GET()
 
-    def do_POST(self):
+    def _route_post(self):
         if not self._check_request_allowed():
             return
 
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length).decode("utf-8")
-        data = json.loads(body) if body else {}
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON body"}, 400)
+            return
+        if not isinstance(data, dict):
+            self._send_json({"error": "JSON body must be an object"}, 400)
+            return
 
         if self.path == "/api/download":
             self._handle_download(data)
@@ -120,7 +141,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             return
 
         book = self.kernel["book"]
-        results = book.search(query)
+        try:
+            results = book.search(query)
+        except Exception as e:
+            self._send_json({"error": str(e), "results": []}, 502)
+            return
         self._send_json({"results": results})
 
     def _handle_book_info(self, book_id: str):
@@ -340,13 +365,11 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                     **result.files,
                 }
             )
+        except DownloadCancelled as e:
+            self._set_progress({"status": "cancelled", "error": str(e)})
         except Exception as e:
             traceback.print_exc()
-            error_msg = str(e)
-            if "cancelled" in error_msg.lower():
-                self._set_progress({"status": "cancelled", "error": error_msg})
-            else:
-                self._set_progress({"status": "error", "error": error_msg})
+            self._set_progress({"status": "error", "error": str(e)})
 
     def _on_progress(self, progress: DownloadProgress):
         """Handle progress updates from the downloader plugin."""

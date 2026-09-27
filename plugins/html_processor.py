@@ -3,6 +3,9 @@ import shutil
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+
+from utils import image_filename
+
 from .base import Plugin
 
 
@@ -53,8 +56,7 @@ class HtmlProcessorPlugin(Plugin):
             if not src:
                 continue
 
-            filename = src.split("/")[-1]
-            img["src"] = f"{path_prefix}Images/{filename}"
+            img["src"] = f"{path_prefix}Images/{image_filename(src)}"
             images.append(src)
 
         return images
