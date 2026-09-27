@@ -1,6 +1,9 @@
 services:
   oreilly-ingest:
     build: .
+    # Rebuild on every `docker compose up` (cached layers keep it fast). web/static
+    # is mounted live, so a stale image would pair a new frontend with an old API.
+    pull_policy: build
     ports:
       - "127.0.0.1:8000:8000"
     volumes:

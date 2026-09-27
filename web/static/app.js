@@ -853,8 +853,11 @@ async function download(cardElement) {
 
         const result = await res.json();
 
-        if (result.error) {
-            cardElement.querySelector('.progress-status').textContent = `Error: ${result.error}`;
+        if (result.error || !result.job_id) {
+            // No job_id means the API predates the download queue (e.g. a stale
+            // Docker image serving this newer frontend).
+            const message = result.error || 'Server is out of date: restart it (docker compose up --build).';
+            cardElement.querySelector('.progress-status').textContent = `Error: ${message}`;
             downloadBtn.classList.remove('hidden');
             cancelBtn.classList.add('hidden');
             return;
