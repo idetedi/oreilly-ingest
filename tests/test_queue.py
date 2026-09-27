@@ -47,7 +47,9 @@ def test_jobs_run_sequentially_in_submit_order():
     wait_for(lambda: queue.get(a.id)["status"] == "running")
     assert queue.get(b.id)["status"] == "queued"
     assert queue.get(b.id)["position"] == 1
-    assert queue.get(a.id)["percentage"] == 42
+    # The job turns "running" before the downloader reports progress, so
+    # wait for the report instead of asserting on it straight away.
+    wait_for(lambda: queue.get(a.id)["percentage"] == 42)
 
     downloader.release.setdefault("a", threading.Event()).set()
     wait_for(lambda: queue.get(a.id)["status"] == "completed")
