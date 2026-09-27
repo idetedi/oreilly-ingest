@@ -70,7 +70,9 @@ pytest
 thread; the web server enqueues through it.
 
 **HTTP**: `core/http_client.py` is thread-safe (one curl_cffi session per thread, shared
-rate limiter with "api"/"asset" lanes, retries on network errors and 429/5xx).
+rate limiter with a fixed "api" lane and an adaptive (AIMD) "asset" lane, retries on
+network errors and 429/5xx). Assets are only fetched for formats that use them
+(`DownloaderPlugin._IMAGE_FORMATS` / `_STYLE_FORMATS`).
 
 ### Web Server
 - `web/server.py`: HTTP server using `http.server`, serves static files from `web/static/`

@@ -80,14 +80,18 @@ Environment variables (all optional):
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `OUTPUT_DIR` | `./output` | Where books are written |
-| `DOWNLOAD_WORKERS` | `4` | Parallel chapter/asset downloads |
+| `DOWNLOAD_WORKERS` | `6` | Parallel chapter/asset downloads |
 | `REQUEST_DELAY` | `0.5` | Min. seconds between API/chapter requests (all threads) |
-| `ASSET_REQUEST_DELAY` | `0.25` | Min. seconds between image/CSS requests (all threads) |
+| `ASSET_REQUEST_DELAY` | `0.25` | Starting gap between image/CSS requests (all threads) |
+| `ASSET_MIN_DELAY` / `ASSET_MAX_DELAY` | `0.1` / `2.0` | Bounds for the adaptive image/CSS rate (~10/s max) |
 | `MAX_RETRIES` / `RETRY_BACKOFF` | `4` / `1.5` | Retries for network errors and 429/5xx responses |
 | `REQUEST_TIMEOUT` | `30` | Per-request timeout in seconds |
 | `ALLOWED_HOSTS` | – | Extra host names the web server accepts (comma-separated) |
 
-Keep the delays conservative: O'Reilly's CDN (Akamai) blocks bursty clients.
+Images and CSS use an adaptive rate: it speeds up while O'Reilly answers normally and halves
+on any sign of throttling (403/429/5xx). Keep the bounds conservative: O'Reilly's CDN (Akamai)
+blocks bursty clients. Text-only formats (JSON, TOON, plain text, chunks) skip images and CSS
+entirely, and the Markdown export ships its images in `Markdown/Images/`.
 
 ## Security
 
