@@ -135,6 +135,12 @@ class DownloaderPlugin(Plugin):
     # Formats that only support entire book (no chapter selection)
     BOOK_ONLY_FORMATS = frozenset(["epub", "chunks"])
 
+    # Formats whose output embeds images / uses the book's stylesheets. The
+    # text-only formats (json, jsonl, toon, plaintext, chunks) need neither,
+    # so their downloads skip the asset phase entirely.
+    _IMAGE_FORMATS = frozenset({"epub", "pdf", "pdf-chapters", "markdown", "markdown-chapters"})
+    _STYLE_FORMATS = frozenset({"epub", "pdf", "pdf-chapters"})
+
     # Output generators, run in this order: (formats that trigger it, method)
     _GENERATORS = (
         (frozenset({"epub"}), "_generate_epub"),
@@ -300,7 +306,8 @@ class DownloaderPlugin(Plugin):
         )
 
         cover_url = ctx.book_info.get("cover_url")
-        if not ctx.skip_images and cover_url:
+        # Only EPUB and PDF render the cover
+        if cover_url and not ctx.skip_images and self._STYLE_FORMATS & set(ctx.formats):
             ctx.report("downloading_cover", 12)
             images_dir = output_plugin.get_images_dir(ctx.book_dir)
             images_dir.mkdir(parents=True, exist_ok=True)
@@ -447,12 +454,18 @@ class DownloaderPlugin(Plugin):
         html_processor = self.kernel["html_processor"]
         ctx.report("downloading_assets", 80)
 
-        image_list = sorted(ctx.image_urls)
+        requested = set(ctx.formats)
+        need_css = bool(self._STYLE_FORMATS & requested)
+        need_images = not ctx.skip_images and bool(self._IMAGE_FORMATS & requested)
+
         # Sorted so StyleNN.css maps to the same URL on every run (resume reuses
-        # the files already on disk).
-        ctx.css_list = sorted(ctx.css_urls)
+        # the files already on disk). css_list is also what EPUB/PDF reference.
+        ctx.css_list = sorted(ctx.css_urls) if need_css else []
+        image_list = sorted(ctx.image_urls) if need_images else []
         css_count = len(ctx.css_list)
         total_assets = css_count + len(image_list)
+        if total_assets == 0:
+            return
 
         def progress(offset: int, label: str, count: int):
             width = len(str(count))
@@ -475,13 +488,14 @@ class DownloaderPlugin(Plugin):
             cancel_check=ctx.cancel_check,
         )
 
-        if ctx.skip_images:
+        if not need_images:
             return
 
         # Assets referenced in CSS (e.g. url() images in ::after), then inline
         # CSS content:url() images as <img> tags (Apple Books compat)
-        assets_plugin.download_css_assets(ctx.css_list, ctx.oebps)
-        html_processor.inline_css_content_images(ctx.oebps)
+        if need_css:
+            assets_plugin.download_css_assets(ctx.css_list, ctx.oebps)
+            html_processor.inline_css_content_images(ctx.oebps)
 
         assets_plugin.download_all_images(
             image_list,

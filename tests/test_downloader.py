@@ -123,3 +123,12 @@ def test_each_image_is_requested_once(tmp_path):
     image_calls = [u for u in http.calls if "/assets/" in u]
     assert sorted(image_calls) == sorted(set(image_calls)) and len(image_calls) == 2
     assert any("images (2/2)" in e.message for e in events), "progress counts unique images"
+
+
+def test_text_only_formats_skip_assets(tmp_path):
+    http = FakeHttp()
+    result = download(make_kernel(http), tmp_path, formats=["json", "jsonl", "toon", "plaintext", "chunks"])
+
+    assert set(result.files) == {"json", "toon", "plaintext", "chunks"}
+    assert not [u for u in http.calls if "/assets/" in u or u.endswith(".css")], "no image/CSS requests"
+    assert not (result.output_dir / "OEBPS" / "Images").exists()
