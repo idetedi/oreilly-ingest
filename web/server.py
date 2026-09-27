@@ -4,15 +4,14 @@ import json
 import logging
 import os
 import re
-import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import config
-from core import Kernel, create_default_kernel
+from core import DownloadQueue, Kernel, create_default_kernel
 from plugins import ChunkConfig
-from plugins.downloader import DownloadCancelled, DownloadProgress
+from plugins.downloader import DownloaderPlugin
 
 logger = logging.getLogger(__name__)
 
@@ -21,21 +20,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
     """HTTP request handler for the downloader web interface."""
 
     kernel: Kernel = None
-    download_progress: dict = {}
-    _progress_lock = threading.Lock()
-    _cancel_requested: bool = False
-
-    @classmethod
-    def _set_progress(cls, data: dict):
-        """Thread-safe progress replacement."""
-        with cls._progress_lock:
-            cls.download_progress = data
-
-    @classmethod
-    def _update_progress(cls, **kwargs):
-        """Thread-safe progress update."""
-        with cls._progress_lock:
-            cls.download_progress.update(kwargs)
+    queue: DownloadQueue = None
 
     def __init__(self, *args, **kwargs):
         self.static_dir = Path(__file__).parent / "static"
@@ -95,21 +80,28 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._handle_chapters_list(match.group(1))
         elif match := re.match(r"/api/book/([^/]+)$", path):
             self._handle_book_info(match.group(1))
+        elif path == "/api/jobs":
+            self._send_json({"jobs": self.queue.list_jobs()})
+        elif match := re.match(r"/api/jobs/([0-9a-f]+)$", path):
+            self._handle_job(match.group(1))
         elif path == "/api/progress":
             self._handle_progress()
         elif path == "/api/settings":
             self._handle_get_settings()
         elif path == "/api/formats":
-            self._handle_formats()
+            self._send_json(DownloaderPlugin.get_formats_info())
         else:
             super().do_GET()
 
     def _route_post(self):
+        # Always consume the body first: replying before reading it makes the
+        # client see a connection reset instead of the error response.
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length).decode("utf-8")
+
         if not self._check_request_allowed():
             return
 
-        content_length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(content_length).decode("utf-8")
         try:
             data = json.loads(body) if body else {}
         except json.JSONDecodeError:
@@ -119,51 +111,54 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
             self._send_json({"error": "JSON body must be an object"}, 400)
             return
 
-        if self.path == "/api/download":
+        path = urlparse(self.path).path
+        if path == "/api/download":
             self._handle_download(data)
-        elif self.path == "/api/cookies":
+        elif path == "/api/cookies":
             self._handle_cookies(data)
-        elif self.path == "/api/cancel":
+        elif match := re.match(r"/api/jobs/([0-9a-f]+)/cancel$", path):
+            self._handle_job_cancel(match.group(1))
+        elif path == "/api/cancel":
             self._handle_cancel()
-        elif self.path == "/api/reveal":
+        elif path == "/api/reveal":
             self._handle_reveal(data)
-        elif self.path == "/api/settings/output-dir":
+        elif path == "/api/settings/output-dir":
             self._handle_set_output_dir(data)
         else:
             self._send_json({"error": "Not found"}, 404)
 
+    # -- book information --------------------------------------------------
+
     def _handle_status(self):
-        auth = self.kernel["auth"]
-        status = auth.get_status()
-        self._send_json(status)
+        self._send_json(self.kernel["auth"].get_status())
 
     def _handle_search(self, query: str):
         if not query:
             self._send_json({"results": []})
             return
 
-        book = self.kernel["book"]
         try:
-            results = book.search(query)
+            results = self.kernel["book"].search(query)
         except Exception as e:
             self._send_json({"error": str(e), "results": []}, 502)
             return
         self._send_json({"results": results})
 
     def _handle_book_info(self, book_id: str):
-        book = self.kernel["book"]
         try:
-            info = book.fetch(book_id)
-            self._send_json(info)
+            self._send_json(self.kernel["book"].fetch(book_id))
         except Exception as e:
             self._send_json({"error": str(e)}, 400)
 
     def _handle_chapters_list(self, book_id: str):
         """Return list of chapters for chapter selection UI."""
-        chapters_plugin = self.kernel["chapters"]
         try:
-            chapters = chapters_plugin.fetch_list(book_id)
-            result = {
+            chapters = self.kernel["chapters"].fetch_list(book_id)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+        self._send_json(
+            {
                 "chapters": [
                     {
                         "index": i,
@@ -175,62 +170,120 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
                 ],
                 "total": len(chapters),
             }
-            self._send_json(result)
-        except Exception as e:
-            self._send_json({"error": str(e)}, 400)
-
-    def _handle_progress(self):
-        with self._progress_lock:
-            self._send_json(dict(self.download_progress))
-
-    def _handle_get_settings(self):
-        """Return current settings."""
-        self._send_json(
-            {
-                "output_dir": str(config.OUTPUT_DIR),
-            }
         )
 
-    def _handle_formats(self):
-        """Return available output formats for discovery.
+    # -- download queue ----------------------------------------------------
 
-        This endpoint allows any client (web, CLI, etc.) to discover
-        supported formats, aliases, and which formats support chapter selection.
-        """
-        from plugins.downloader import DownloaderPlugin
-        self._send_json(DownloaderPlugin.get_formats_info())
+    def _handle_download(self, data: dict):
+        """Validate a download request and add it to the queue."""
+        book_id = str(data.get("book_id") or "").strip()
+        if not book_id:
+            self._send_json({"error": "book_id required"}, 400)
+            return
+
+        selected_chapters = data.get("chapters")
+        if selected_chapters is not None and (
+            not isinstance(selected_chapters, list)
+            or not all(isinstance(i, int) and i >= 0 for i in selected_chapters)
+        ):
+            self._send_json({"error": "chapters must be a list of chapter indexes"}, 400)
+            return
+
+        chunk_config = None
+        chunking_opts = data.get("chunking") or {}
+        if chunking_opts:
+            try:
+                chunk_config = ChunkConfig(
+                    chunk_size=int(chunking_opts.get("chunk_size", 4000)),
+                    overlap=int(chunking_opts.get("overlap", 200)),
+                    respect_boundaries=True,
+                )
+            except (TypeError, ValueError):
+                self._send_json({"error": "chunk_size and overlap must be integers"}, 400)
+                return
+
+        output_plugin = self.kernel["output"]
+        output_dir_str = data.get("output_dir")
+        if output_dir_str:
+            success, message, output_dir = output_plugin.validate_dir(output_dir_str)
+            if not success:
+                self._send_json({"error": message}, 400)
+                return
+        else:
+            output_dir = output_plugin.get_default_dir()
+
+        formats = DownloaderPlugin.parse_formats(data.get("format", "epub"))
+        job = self.queue.submit(
+            book_id=book_id,
+            title=str(data.get("title") or ""),
+            output_dir=output_dir,
+            formats=formats,
+            selected_chapters=selected_chapters,
+            skip_images=bool(data.get("skip_images", False)),
+            chunk_config=chunk_config,
+            resume=bool(data.get("resume", True)),
+        )
+        self._send_json({"status": "queued", "job_id": job.id, "book_id": book_id, "formats": formats}, 202)
+
+    def _handle_job(self, job_id: str):
+        job = self.queue.get(job_id)
+        if job is None:
+            self._send_json({"error": "Job not found"}, 404)
+        else:
+            self._send_json(job)
+
+    def _handle_job_cancel(self, job_id: str):
+        if self.queue.cancel(job_id):
+            self._send_json({"success": True, "message": "Cancel requested"})
+        else:
+            self._send_json({"success": False, "message": "Job is not active"}, 409)
+
+    def _handle_progress(self):
+        """Legacy single-download endpoint: the running/next/last job, flattened."""
+        job = self.queue.active()
+        if job is None:
+            self._send_json({})
+            return
+        status = job["phase"] if job["status"] == "running" and job["phase"] else job["status"]
+        self._send_json({**job, **job["files"], "status": status})
+
+    def _handle_cancel(self):
+        """Legacy endpoint: cancel the running job."""
+        if self.queue.cancel_active():
+            self._send_json({"success": True, "message": "Cancel requested"})
+        else:
+            self._send_json({"success": False, "message": "No active download"})
+
+    # -- settings & local helpers -------------------------------------------
+
+    def _handle_get_settings(self):
+        self._send_json({"output_dir": str(config.OUTPUT_DIR)})
 
     def _handle_set_output_dir(self, data: dict):
         """Handle output directory selection - browse or direct path."""
-        system_plugin = self.kernel["system"]
-        output_plugin = self.kernel["output"]
-
         if data.get("browse"):
             # Open native folder picker dialog
-            initial_dir = config.OUTPUT_DIR
-            selected = system_plugin.show_folder_picker(initial_dir)
+            selected = self.kernel["system"].show_folder_picker(config.OUTPUT_DIR)
             if selected:
                 self._send_json({"success": True, "path": str(selected)})
             else:
                 self._send_json({"cancelled": True})
             return
 
-        path_str = data.get("path", "").strip()
-
+        path_str = str(data.get("path") or "").strip()
         if not path_str:
             self._send_json({"error": "path required"}, 400)
             return
 
-        success, message, path = output_plugin.validate_dir(path_str)
+        success, message, path = self.kernel["output"].validate_dir(path_str)
         if not success:
             self._send_json({"error": message}, 400)
             return
-
         self._send_json({"success": True, "path": str(path)})
 
     def _handle_cookies(self, data: dict):
         """Save cookies from user input."""
-        if not isinstance(data, dict) or not data:
+        if not data:
             self._send_json({"error": "Invalid cookie data"}, 400)
             return
 
@@ -243,171 +296,47 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         except Exception as e:
             self._send_json({"error": str(e)}, 500)
 
-    def _handle_cancel(self):
-        """Request cancellation of the current download."""
-        with self._progress_lock:
-            status = self.download_progress.get("status")
-            if status and status not in ("completed", "error", "cancelled"):
-                DownloaderHandler._cancel_requested = True
-                self._send_json({"success": True, "message": "Cancel requested"})
-            else:
-                self._send_json({"success": False, "message": "No active download"})
-
     def _handle_reveal(self, data: dict):
         """Open file manager and select the specified file."""
-        path_str = data.get("path", "")
+        path_str = str(data.get("path") or "")
         if not path_str:
             self._send_json({"error": "path required"}, 400)
             return
 
         path = Path(path_str).resolve()
-
         if not path.exists():
             self._send_json({"error": "Path does not exist"}, 404)
             return
 
-        system_plugin = self.kernel["system"]
-        success = system_plugin.reveal_in_file_manager(path)
-
-        if success:
+        if self.kernel["system"].reveal_in_file_manager(path):
             self._send_json({"success": True})
         else:
             self._send_json({"error": "Failed to reveal file"}, 500)
 
-    def _handle_download(self, data: dict):
-        """Start a book download."""
-        book_id = data.get("book_id")
-        output_format = data.get("format", "epub")
-        selected_chapters = data.get("chapters")
-        output_dir_str = data.get("output_dir")
-        chunking_opts = data.get("chunking", {})
-        skip_images = data.get("skip_images", False)
-
-        if not book_id:
-            self._send_json({"error": "book_id required"}, 400)
-            return
-
-        # Parse chunking config
-        chunk_config = None
-        if chunking_opts:
-            chunk_size = chunking_opts.get("chunk_size", 4000)
-            overlap = chunking_opts.get("overlap", 200)
-            chunk_config = ChunkConfig(
-                chunk_size=chunk_size,
-                overlap=overlap,
-                respect_boundaries=True,
-            )
-
-        # Validate output directory
-        output_plugin = self.kernel["output"]
-        if output_dir_str:
-            success, message, output_dir = output_plugin.validate_dir(output_dir_str)
-            if not success:
-                self._send_json({"error": message}, 400)
-                return
-        else:
-            output_dir = output_plugin.get_default_dir()
-
-        # Check if already downloading
-        with self._progress_lock:
-            status = self.download_progress.get("status")
-            if status and status not in ("completed", "error", "cancelled"):
-                self._send_json({"error": "Download already in progress"}, 409)
-                return
-
-        # Parse formats using plugin (single source of truth)
-        from plugins.downloader import DownloaderPlugin
-        formats = DownloaderPlugin.parse_formats(output_format)
-        logger.debug("Download requested: book=%s formats=%s", book_id, formats)
-
-        # Start download in background thread
-        thread = threading.Thread(
-            target=self._download_book_async,
-            args=(book_id, output_dir, formats, selected_chapters, skip_images, chunk_config),
-            daemon=True,
-        )
-        thread.start()
-
-        # Return immediately
-        self._send_json({"status": "started", "book_id": book_id})
-
-    def _download_book_async(
-        self,
-        book_id: str,
-        output_dir: Path,
-        formats: list[str],
-        selected_chapters: list | None,
-        skip_images: bool,
-        chunk_config: ChunkConfig | None,
-    ):
-        """Background download wrapper with error handling."""
-        # Reset cancel flag
-        DownloaderHandler._cancel_requested = False
-
-        try:
-            downloader = self.kernel["downloader"]
-            result = downloader.download(
-                book_id=book_id,
-                output_dir=output_dir,
-                formats=formats,
-                selected_chapters=selected_chapters,
-                skip_images=skip_images,
-                chunk_config=chunk_config,
-                progress_callback=self._on_progress,
-                cancel_check=lambda: DownloaderHandler._cancel_requested,
-            )
-
-            self._set_progress(
-                {
-                    "status": "completed",
-                    "book_id": result.book_id,
-                    "title": result.title,
-                    "percentage": 100,
-                    **result.files,
-                }
-            )
-        except DownloadCancelled as e:
-            self._set_progress({"status": "cancelled", "error": str(e)})
-        except Exception as e:
-            logger.exception("Download of %s failed", book_id)
-            self._set_progress({"status": "error", "error": str(e)})
-
-    def _on_progress(self, progress: DownloadProgress):
-        """Handle progress updates from the downloader plugin."""
-        self._set_progress(
-            {
-                "status": progress.status,
-                "book_id": progress.book_id,
-                "percentage": progress.percentage,
-                "message": progress.message,
-                "eta_seconds": progress.eta_seconds,
-                "current_chapter": progress.current_chapter,
-                "total_chapters": progress.total_chapters,
-                "chapter_title": progress.chapter_title,
-            }
-        )
-
     def _send_json(self, data: dict, status: int = 200):
+        body = json.dumps(data).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(json.dumps(data).encode())
+        self.wfile.write(body)
 
     def log_message(self, format, *args):
         logger.debug("%s - %s", self.address_string(), format % args)
 
 
-def create_server(host: str = "localhost", port: int = 8000) -> ThreadingHTTPServer:
+def create_server(host: str = "localhost", port: int = 8000, kernel: Kernel | None = None) -> ThreadingHTTPServer:
     """Create and configure the HTTP server.
 
     Uses a threading server so a single slow or stalled client (or a long
     download) cannot block status/progress/cookie requests.
     """
-    kernel = create_default_kernel()
+    kernel = kernel or create_default_kernel()
     DownloaderHandler.kernel = kernel
+    DownloaderHandler.queue = DownloadQueue(kernel["downloader"])
 
-    server = ThreadingHTTPServer((host, port), DownloaderHandler)
-    return server
+    return ThreadingHTTPServer((host, port), DownloaderHandler)
 
 
 def run_server(host: str = "localhost", port: int = 8000):
