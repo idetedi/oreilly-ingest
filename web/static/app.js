@@ -995,10 +995,7 @@ async function pollProgress(cardElement, jobId) {
     }
 }
 
-/* ---------------------------------------------------------------------------
- * Download queue panel
- * ------------------------------------------------------------------------- */
-
+// Download queue panel
 const QUEUE_PANEL_LIMIT = 10;
 let queueTimer = null;
 

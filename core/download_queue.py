@@ -79,8 +79,6 @@ class DownloadQueue:
         self._cond = threading.Condition()
         self._worker: threading.Thread | None = None
 
-    # -- public API -------------------------------------------------------
-
     def submit(self, **params) -> DownloadJob:
         job = DownloadJob(**params)
         with self._cond:
@@ -128,8 +126,6 @@ class DownloadQueue:
         with self._cond:
             running = next((j for j in self._jobs.values() if j.status == RUNNING), None)
         return self.cancel(running.id) if running else False
-
-    # -- worker -----------------------------------------------------------
 
     def _ensure_worker(self):
         if self._worker is None or not self._worker.is_alive():
@@ -182,7 +178,7 @@ class DownloadQueue:
             job.title = title or job.title
             job.finished_at = time.time()
 
-    # -- helpers (call with the lock held) --------------------------------
+    # The helpers below must be called with self._cond held.
 
     def _position(self, job: DownloadJob) -> int | None:
         """1-based position among queued jobs, or None when not queued."""

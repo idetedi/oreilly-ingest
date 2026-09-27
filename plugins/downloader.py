@@ -265,10 +265,6 @@ class DownloaderPlugin(Plugin):
         ctx.report("completed", 100)
         return result
 
-    # ------------------------------------------------------------------
-    # Phases
-    # ------------------------------------------------------------------
-
     def _fetch_metadata(self, ctx: DownloadContext):
         """Fetch book metadata, chapter list and TOC; apply chapter selection.
 
@@ -367,8 +363,6 @@ class DownloaderPlugin(Plugin):
                 pool.shutdown(wait=False, cancel_futures=True)
                 raise
 
-    # -- resume state ----------------------------------------------------
-
     _STATE_FILE = ".download_state.json"
     _STATE_VERSION = 1
 
@@ -418,8 +412,6 @@ class DownloaderPlugin(Plugin):
         ctx.add_images(ch["images"])
         ctx.add_images(entry.get("images", []))
         ctx.chapters_data.append((ch["filename"], ch["title"], processed))
-
-    # --------------------------------------------------------------------
 
     def _process_chapter(self, ctx: DownloadContext, ch: dict, raw_html: str) -> list[str]:
         """Process and write one chapter; returns the image URLs it references."""
@@ -516,10 +508,6 @@ class DownloaderPlugin(Plugin):
         # so it is only removed once every requested format has been written.
         if "epub" in requested:
             self.kernel["epub"].cleanup_build_artifacts(ctx.book_dir)
-
-    # ------------------------------------------------------------------
-    # Output generators
-    # ------------------------------------------------------------------
 
     def _generate_epub(self, ctx: DownloadContext, result: DownloadResult):
         ctx.report("generating_epub", 90)
