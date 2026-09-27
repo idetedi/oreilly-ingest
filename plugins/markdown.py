@@ -1,7 +1,14 @@
 import re
+import shutil
 from pathlib import Path
+
 from markdownify import markdownify as md
+
 from .base import Plugin
+
+# Image links produced from the chapter HTML: "./Images/x.png" or "../Images/x.png"
+# (chapters in subfolders). Captures the file name.
+_IMAGE_LINK_RE = re.compile(r"\]\((?:\./|(?:\.\./)+)?Images/([^)\s]+)")
 
 
 class MarkdownPlugin(Plugin):
@@ -21,10 +28,11 @@ class MarkdownPlugin(Plugin):
 
         return markdown
 
-    def save_chapter(self, html: str, title: str, output_path: Path):
+    def save_chapter(self, html: str, title: str, output_path: Path) -> str:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         markdown = self.convert(html, title)
-        output_path.write_text(markdown)
+        output_path.write_text(markdown, encoding="utf-8")
+        return markdown
 
     def generate_book(
         self,
@@ -40,12 +48,29 @@ class MarkdownPlugin(Plugin):
         readme += f"**Publishers:** {', '.join(book_info.get('publishers', []))}\n\n"
         readme += "## Chapters\n\n"
 
+        images: set[str] = set()
         for filename, title, html in chapters:
             md_filename = filename.replace(".html", ".md").replace(".xhtml", ".md")
-            self.save_chapter(html, title, md_dir / md_filename)
+            markdown = self.save_chapter(html, title, md_dir / md_filename)
+            images.update(_IMAGE_LINK_RE.findall(markdown))
             readme += f"- [{title}]({md_filename})\n"
 
-        (md_dir / "README.md").write_text(readme)
+        (md_dir / "README.md").write_text(readme, encoding="utf-8")
+        self._copy_images(images, output_dir / "OEBPS" / "Images", md_dir / "Images")
+
+    @staticmethod
+    def _copy_images(names: set[str], source_dir: Path, target_dir: Path):
+        """Copy the images the Markdown links to next to it (Markdown/Images/).
+
+        The downloaded images live in OEBPS/Images, which is removed after an
+        EPUB is built, so the Markdown export keeps its own copy.
+        """
+        for name in names:
+            source = source_dir / name
+            target = target_dir / name
+            if source.is_file() and not target.exists():
+                target_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
 
     def _detect_language(self, el):
         classes = el.get("class", [])

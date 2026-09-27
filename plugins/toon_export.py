@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from toon_format import encode
+
 from utils.files import sanitize_filename
 
 from .json_export import JsonExportPlugin

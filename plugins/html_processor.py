@@ -3,6 +3,9 @@ import shutil
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+
+from utils import image_filename
+
 from .base import Plugin
 
 
@@ -53,8 +56,7 @@ class HtmlProcessorPlugin(Plugin):
             if not src:
                 continue
 
-            filename = src.split("/")[-1]
-            img["src"] = f"{path_prefix}Images/{filename}"
+            img["src"] = f"{path_prefix}Images/{image_filename(src)}"
             images.append(src)
 
         return images
@@ -83,6 +85,14 @@ class HtmlProcessorPlugin(Plugin):
             if style.has_attr("data-template"):
                 style.string = style["data-template"]
                 del style["data-template"]
+
+    def extract_body(self, xhtml_path: Path) -> str:
+        """Return the <body> content of a chapter file written by wrap_xhtml()."""
+        content = xhtml_path.read_text(encoding="utf-8")
+        body_match = re.search(r"<body[^>]*>(.*?)</body>", content, re.DOTALL | re.IGNORECASE)
+        if body_match:
+            return body_match.group(1).strip("\n")
+        return content
 
     def wrap_xhtml(self, content: str, css_files: list[str], title: str = "") -> str:
         css_links = "\n".join(

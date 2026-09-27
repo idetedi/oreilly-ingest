@@ -1,3 +1,5 @@
-from .kernel import Kernel, create_default_kernel
+from .download_queue import DownloadJob, DownloadQueue
+from .errors import DownloadCancelled
 from .http_client import HttpClient
-from .types import ChapterInfo, ChapterSummary, BookInfo, FormatInfo
+from .kernel import Kernel, create_default_kernel
+from .types import BookInfo, ChapterInfo, ChapterSummary, FormatInfo

@@ -1,5 +1,5 @@
 """Shared utilities for O'Reilly Downloader."""
 
-from .files import sanitize_filename, slugify
+from .files import image_filename, sanitize_filename, slugify
 
-__all__ = ["sanitize_filename", "slugify"]
+__all__ = ["image_filename", "sanitize_filename", "slugify"]

@@ -22,6 +22,7 @@ Cookie values are never printed.
 import argparse
 import base64
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -102,7 +103,8 @@ def refresh_once(args) -> int:
 
     # Write to whichever cookies file the app uses (data/ in Docker, root otherwise).
     target = (DATA_DIR / "cookies.json") if DATA_DIR.exists() else ROOT_COOKIES
-    target.write_text(json.dumps(cookies, indent=2))
+    target.write_text(json.dumps(cookies, indent=2), encoding="utf-8")
+    os.chmod(target, 0o600)  # session cookies are credentials (no-op on Windows)
     print(f"Wrote {len(cookies)} cookies to {target}")
     if left is not None:
         print(f"orm-jwt valid for ~{left // 60}m {left % 60}s")

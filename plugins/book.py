@@ -1,8 +1,10 @@
 import re
+from urllib.parse import quote
+
+import config
+from core.types import BookInfo
 
 from .base import Plugin
-import config
-
 
 _COVER_WIDTH_RE = re.compile(r'/\d+w/?$')
 _HIGH_RES_COVER_WIDTH = '1200w'
@@ -23,7 +25,7 @@ def _upgrade_cover_url(url: str) -> str:
 
 
 class BookPlugin(Plugin):
-    def fetch(self, book_id: str) -> dict:
+    def fetch(self, book_id: str) -> BookInfo:
         search_data = self._fetch_search(book_id)
         epub_data = self._fetch_epub(book_id)
 
@@ -50,7 +52,7 @@ class BookPlugin(Plugin):
         }
 
     def _fetch_search(self, book_id: str) -> dict:
-        url = f"{config.API_V2}/search/?query={book_id}&limit=1"
+        url = f"{config.API_V2}/search/?query={quote(book_id)}&limit=1"
         data = self.http.get_json(url)
         results = data.get("results", [])
         if not results:
@@ -62,7 +64,7 @@ class BookPlugin(Plugin):
         return self.http.get_json(url)
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
-        url = f"{config.API_V2}/search/?query={query}&limit={limit}"
+        url = f"{config.API_V2}/search/?query={quote(query)}&limit={limit}"
         data = self.http.get_json(url)
         results = []
         for item in data.get("results", []):

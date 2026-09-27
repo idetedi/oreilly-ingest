@@ -36,15 +36,21 @@ class BookInfo(TypedDict, total=False):
     Note: Uses total=False because not all fields are always present.
     """
 
-    book_id: str
+    id: str
+    ourn: str
     title: str
     authors: list[str]
-    publisher: str
-    cover_url: str | None
+    publishers: list[str]
     description: str
-    isbn: str | None
-    topics: list[str]
-    pages: int | None
+    cover_url: str | None
+    isbn: str
+    language: str
+    publication_date: str
+    virtual_pages: int | None
+    chapters_url: str | None
+    toc_url: str | None
+    spine_url: str | None
+    files_url: str | None
 
 
 class FormatInfo(TypedDict):

@@ -1,0 +1,24 @@
+[project]
+name = "oreilly-ingest"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = [".venv", "output", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = [
+    "E501",  # long HTML/CSS template strings are clearer unwrapped
+    "B024",  # Plugin is an ABC used as a marker base class
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cli", "config", "core", "plugins", "utils", "web"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # package-level re-exports

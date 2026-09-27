@@ -1,6 +1,7 @@
 """File system utilities."""
 
 import re
+from urllib.parse import unquote, urlsplit
 
 
 def sanitize_filename(name: str) -> str:
@@ -13,6 +14,17 @@ def sanitize_filename(name: str) -> str:
     if len(name) > 200:
         name = name[:200].strip()
     return name
+
+
+def image_filename(url: str) -> str:
+    """Return the local file name used for an image URL or relative src.
+
+    Shared by the HTML link rewriter and the asset downloader so the
+    rewritten <img src> always matches the file saved on disk.
+    """
+    path = urlsplit(url).path
+    name = unquote(path.rsplit("/", 1)[-1])
+    return sanitize_filename(name) or "image"
 
 
 def slugify(name: str) -> str:

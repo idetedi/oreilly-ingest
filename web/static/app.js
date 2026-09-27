@@ -10,6 +10,37 @@ let defaultOutputDir = '';
 const chaptersCache = {};
 
 /**
+ * Escape a value for safe interpolation into HTML text or attributes.
+ */
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
+ * Minimal HTML sanitizer for remote rich text (book descriptions).
+ * Drops active elements, event-handler attributes and javascript: URLs.
+ */
+function sanitizeHtml(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    doc.querySelectorAll('script, style, iframe, object, embed, link, meta, form').forEach(el => el.remove());
+    doc.body.querySelectorAll('*').forEach(el => {
+        for (const attr of Array.from(el.attributes)) {
+            const name = attr.name.toLowerCase();
+            const value = attr.value.trim().toLowerCase();
+            if (name.startsWith('on') || ((name === 'href' || name === 'src') && value.startsWith('javascript:'))) {
+                el.removeAttribute(attr.name);
+            }
+        }
+    });
+    return doc.body.innerHTML;
+}
+
+/**
  * Get high-resolution cover URL for expanded view.
  * O'Reilly provides larger covers at /covers/urn:orm:book:{id}/400w/
  */
@@ -127,7 +158,7 @@ async function search(query) {
         if (!data.results || data.results.length === 0) {
             container.innerHTML = `
                 <div class="text-center py-16 text-zinc-500">
-                    <p class="text-lg">No books found for "${query}"</p>
+                    <p class="text-lg">No books found for "${escapeHtml(query)}"</p>
                     <p class="text-sm mt-2 text-zinc-400">Try a different search term or ISBN</p>
                 </div>
             `;
@@ -138,6 +169,7 @@ async function search(query) {
             const div = document.createElement('article');
             div.className = 'book-card group bg-white rounded-xl border border-zinc-200 overflow-hidden transition-all duration-200 hover:border-zinc-300 hover:shadow-card-hover';
             div.dataset.bookId = book.id;
+            div.dataset.title = book.title || '';
             div.innerHTML = createBookCardHTML(book);
 
             setupBookCardEvents(div, book);
@@ -154,13 +186,16 @@ async function search(query) {
 }
 
 function createBookCardHTML(book) {
+    const title = escapeHtml(book.title);
+    const authors = escapeHtml(book.authors?.join(', ') || 'Unknown Author');
+    const coverUrl = escapeHtml(book.cover_url);
     return `
         <!-- Collapsed Summary -->
         <div class="book-summary flex items-center gap-4 p-4 cursor-pointer">
-            <img src="${book.cover_url}" alt="${book.title} cover" class="w-12 h-16 object-cover rounded shadow-sm flex-shrink-0" loading="lazy">
+            <img src="${coverUrl}" alt="${title} cover" class="w-12 h-16 object-cover rounded shadow-sm flex-shrink-0" loading="lazy">
             <div class="flex-1 min-w-0">
-                <h3 class="text-[0.9375rem] font-semibold text-zinc-900 leading-snug truncate">${book.title}</h3>
-                <p class="text-sm text-zinc-500 truncate">${book.authors?.join(', ') || 'Unknown Author'}</p>
+                <h3 class="text-[0.9375rem] font-semibold text-zinc-900 leading-snug truncate">${title}</h3>
+                <p class="text-sm text-zinc-500 truncate">${authors}</p>
             </div>
             <svg class="expand-icon w-5 h-5 text-zinc-400 flex-shrink-0 transition-transform duration-200" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M6 9l6 6 6-6"/>
@@ -179,10 +214,10 @@ function createBookCardHTML(book) {
             <div class="relative px-5 pb-5 pt-2 border-t border-zinc-100 animate-fade-in">
                 <!-- Book Detail -->
                 <div class="flex gap-5 py-5">
-                    <img class="w-24 h-32 object-cover rounded-lg shadow-md flex-shrink-0" src="${getHighResCoverUrl(book.id)}" alt="${book.title} cover">
+                    <img class="w-24 h-32 object-cover rounded-lg shadow-md flex-shrink-0" src="${escapeHtml(getHighResCoverUrl(book.id))}" alt="${title} cover">
                     <div class="flex-1 min-w-0">
-                        <h2 class="text-xl font-semibold text-zinc-900 leading-tight mb-1">${book.title}</h2>
-                        <p class="text-[0.9375rem] text-zinc-500 mb-3">by ${book.authors?.join(', ') || 'Unknown Author'}</p>
+                        <h2 class="text-xl font-semibold text-zinc-900 leading-tight mb-1">${title}</h2>
+                        <p class="text-[0.9375rem] text-zinc-500 mb-3">by ${authors}</p>
                         <p class="text-sm text-zinc-500 mb-0.5">
                             <span class="text-zinc-400">Publisher:</span>
                             <span class="publisher-value text-zinc-500 animate-pulse-subtle">Loading...</span>
@@ -652,7 +687,11 @@ async function expandBook(cardElement, bookId) {
         pagesEl.textContent = book.virtual_pages || 'N/A';
         pagesEl.classList.remove('animate-pulse-subtle');
 
-        descEl.innerHTML = book.description || 'No description available.';
+        if (book.description) {
+            descEl.innerHTML = sanitizeHtml(book.description);
+        } else {
+            descEl.textContent = 'No description available.';
+        }
         descEl.classList.remove('animate-pulse-subtle');
     } catch (error) {
         const descEl = expanded.querySelector('.book-description');
@@ -686,7 +725,7 @@ function renderChapters(cardElement, chapters) {
     listContainer.innerHTML = chapters.map((ch) => `
         <label class="chapter-item flex items-center gap-3 px-2 py-2 rounded-lg cursor-pointer hover:bg-zinc-100 transition-colors">
             <input type="checkbox" class="chapter-checkbox w-4 h-4 rounded border-zinc-300 text-oreilly-blue focus:ring-oreilly-blue/20" data-index="${ch.index}" checked>
-            <span class="flex-1 text-sm text-zinc-700 truncate">${ch.title || 'Chapter ' + (ch.index + 1)}</span>
+            <span class="flex-1 text-sm text-zinc-700 truncate">${escapeHtml(ch.title || 'Chapter ' + (ch.index + 1))}</span>
             ${ch.pages ? `<span class="text-xs text-zinc-400 flex-shrink-0">${ch.pages}p</span>` : ''}
         </label>
     `).join('');
@@ -801,6 +840,10 @@ async function download(cardElement) {
         requestBody.skip_images = true;
     }
 
+    if (cardElement.dataset.title) {
+        requestBody.title = cardElement.dataset.title;
+    }
+
     try {
         const res = await fetch(`${API}/api/download`, {
             method: 'POST',
@@ -810,14 +853,19 @@ async function download(cardElement) {
 
         const result = await res.json();
 
-        if (result.error) {
-            cardElement.querySelector('.progress-status').textContent = `Error: ${result.error}`;
+        if (result.error || !result.job_id) {
+            // No job_id means the API predates the download queue (e.g. a stale
+            // Docker image serving this newer frontend).
+            const message = result.error || 'Server is out of date: restart it (docker compose up --build).';
+            cardElement.querySelector('.progress-status').textContent = `Error: ${message}`;
             downloadBtn.classList.remove('hidden');
             cancelBtn.classList.add('hidden');
             return;
         }
 
-        pollProgress(cardElement);
+        cardElement.dataset.jobId = result.job_id;
+        pollProgress(cardElement, result.job_id);
+        refreshQueue();
     } catch (err) {
         cardElement.querySelector('.progress-status').textContent = 'Download failed. Please try again.';
         downloadBtn.classList.remove('hidden');
@@ -825,15 +873,21 @@ async function download(cardElement) {
     }
 }
 
+async function cancelJob(jobId) {
+    try {
+        await fetch(`${API}/api/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' });
+    } catch (err) {
+        console.error('Cancel request failed:', err);
+    }
+    refreshQueue();
+}
+
 async function cancelDownload(cardElement) {
     const cancelBtn = cardElement.querySelector('.cancel-btn');
     cancelBtn.disabled = true;
     cancelBtn.textContent = 'Cancelling...';
-
-    try {
-        await fetch(`${API}/api/cancel`, { method: 'POST' });
-    } catch (err) {
-        console.error('Cancel request failed:', err);
+    if (cardElement.dataset.jobId) {
+        await cancelJob(cardElement.dataset.jobId);
     }
 }
 
@@ -847,10 +901,57 @@ function formatETA(seconds) {
     return `${hours}h ${remainMins}m`;
 }
 
-async function pollProgress(cardElement) {
+const ACTIVE_JOB_STATUSES = ['queued', 'running'];
+
+/**
+ * One-line human description of a job's state (shared by card and queue panel).
+ */
+function describeJob(job) {
+    if (job.status === 'queued') {
+        return job.position ? `Queued (position ${job.position})` : 'Queued';
+    }
+    if (job.status === 'completed') return 'Completed';
+    if (job.status === 'cancelled') return job.error || 'Cancelled';
+    if (job.status === 'error') return `Error: ${job.error}`;
+
+    const details = [];
+    if (job.current_chapter && job.total_chapters) {
+        details.push(`Chapter ${job.current_chapter}/${job.total_chapters}`);
+    }
+    if (job.eta_seconds && job.eta_seconds > 0) {
+        details.push(`~${formatETA(job.eta_seconds)} remaining`);
+    }
+    if (details.length > 0) return details.join(' • ');
+    if (job.message) return job.message;
+    return (job.phase || 'starting').replace(/_/g, ' ');
+}
+
+function renderResultFiles(files) {
+    let filesHTML = '';
+    if (files.epub) filesHTML += createFileResultHTML('EPUB', files.epub);
+    if (files.pdf) {
+        if (Array.isArray(files.pdf)) {
+            filesHTML += `<div class="flex items-center gap-3 px-4 py-3 bg-zinc-50 rounded-lg text-sm"><span class="font-medium text-zinc-700 min-w-[70px]">PDF</span><span class="flex-1 font-mono text-xs text-zinc-500 truncate">${files.pdf.length} chapter files</span></div>`;
+        } else {
+            filesHTML += createFileResultHTML('PDF', files.pdf);
+        }
+    }
+    if (files.markdown) filesHTML += createFileResultHTML('Markdown', files.markdown);
+    if (files.plaintext) filesHTML += createFileResultHTML('Plain Text', files.plaintext);
+    if (files.json) filesHTML += createFileResultHTML('JSON', files.json);
+    if (files.toon) filesHTML += createFileResultHTML('TOON', files.toon);
+    if (files.chunks) filesHTML += createFileResultHTML('Chunks', files.chunks);
+    return filesHTML;
+}
+
+async function pollProgress(cardElement, jobId) {
+    // Stop if the card started a newer download in the meantime
+    if (cardElement.dataset.jobId !== jobId) return;
+
     try {
-        const res = await fetch(`${API}/api/progress`);
-        const data = await res.json();
+        const res = await fetch(`${API}/api/jobs/${encodeURIComponent(jobId)}`);
+        const job = await res.json();
+        if (job.error && !job.status) throw new Error(job.error);
 
         const progressFill = cardElement.querySelector('.progress-fill');
         const progressStatus = cardElement.querySelector('.progress-status');
@@ -860,30 +961,11 @@ async function pollProgress(cardElement) {
         const downloadBtn = cardElement.querySelector('.download-btn');
         const cancelBtn = cardElement.querySelector('.cancel-btn');
 
-        let status = data.status || 'waiting';
-        const details = [];
-
-        if (data.current_chapter && data.total_chapters) {
-            details.push(`Chapter ${data.current_chapter}/${data.total_chapters}`);
+        if (typeof job.percentage === 'number') {
+            progressFill.style.width = `${job.percentage}%`;
+            progressPercent.textContent = `${job.percentage}%`;
         }
-
-        if (typeof data.percentage === 'number') {
-            progressFill.style.width = `${data.percentage}%`;
-            progressPercent.textContent = `${data.percentage}%`;
-        }
-
-        if (data.eta_seconds && data.eta_seconds > 0) {
-            details.push(`~${formatETA(data.eta_seconds)} remaining`);
-        }
-
-        if (data.chapter_title) {
-            const title = data.chapter_title.length > 40
-                ? data.chapter_title.substring(0, 40) + '...'
-                : data.chapter_title;
-            status = title;
-        }
-
-        progressStatus.textContent = details.length > 0 ? details.join(' • ') : status;
+        progressStatus.textContent = describeJob(job);
 
         function restoreButtons() {
             downloadBtn.classList.remove('hidden');
@@ -893,49 +975,103 @@ async function pollProgress(cardElement) {
             cancelBtn.textContent = 'Cancel';
         }
 
-        if (data.status === 'completed') {
+        if (job.status === 'completed') {
             restoreButtons();
             progressSection.classList.add('hidden');
             resultSection.classList.remove('hidden');
-
-            let filesHTML = '';
-            if (data.epub) filesHTML += createFileResultHTML('EPUB', data.epub);
-            if (data.pdf) {
-                if (Array.isArray(data.pdf)) {
-                    filesHTML += `<div class="flex items-center gap-3 px-4 py-3 bg-zinc-50 rounded-lg text-sm"><span class="font-medium text-zinc-700 min-w-[70px]">PDF</span><span class="flex-1 font-mono text-xs text-zinc-500 truncate">${data.pdf.length} chapter files</span></div>`;
-                } else {
-                    filesHTML += createFileResultHTML('PDF', data.pdf);
-                }
-            }
-            if (data.markdown) filesHTML += createFileResultHTML('Markdown', data.markdown);
-            if (data.plaintext) filesHTML += createFileResultHTML('Plain Text', data.plaintext);
-            if (data.json) filesHTML += createFileResultHTML('JSON', data.json);
-            if (data.chunks) filesHTML += createFileResultHTML('Chunks', data.chunks);
-
-            cardElement.querySelector('.result-files').innerHTML = filesHTML;
-        } else if (data.status === 'error') {
+            cardElement.querySelector('.result-files').innerHTML = renderResultFiles(job.files || {});
+        } else if (job.status === 'error' || job.status === 'cancelled') {
             restoreButtons();
-            progressStatus.textContent = `Error: ${data.error}`;
         } else {
             progressSection.classList.remove('hidden');
             resultSection.classList.add('hidden');
             downloadBtn.classList.add('hidden');
             cancelBtn.classList.remove('hidden');
-            setTimeout(() => pollProgress(cardElement), 500);
+            setTimeout(() => pollProgress(cardElement, jobId), 500);
         }
     } catch (err) {
         console.error('Progress polling failed:', err);
-        setTimeout(() => pollProgress(cardElement), 1000);
+        setTimeout(() => pollProgress(cardElement, jobId), 1000);
     }
 }
 
+/* ---------------------------------------------------------------------------
+ * Download queue panel
+ * ------------------------------------------------------------------------- */
+
+const QUEUE_PANEL_LIMIT = 10;
+let queueTimer = null;
+
+async function refreshQueue() {
+    clearTimeout(queueTimer);
+    queueTimer = null;
+
+    let jobs = [];
+    try {
+        const res = await fetch(`${API}/api/jobs`);
+        jobs = (await res.json()).jobs || [];
+    } catch (err) {
+        console.error('Queue refresh failed:', err);
+    }
+
+    renderQueue(jobs);
+
+    // Keep polling only while something is queued or running
+    if (jobs.some(job => ACTIVE_JOB_STATUSES.includes(job.status))) {
+        queueTimer = setTimeout(refreshQueue, 1500);
+    }
+}
+
+function renderQueue(jobs) {
+    const panel = document.getElementById('queue-panel');
+    const list = document.getElementById('queue-list');
+    const recent = jobs.slice(-QUEUE_PANEL_LIMIT).reverse();
+
+    panel.classList.toggle('hidden', recent.length === 0);
+    list.innerHTML = recent.map(createQueueRowHTML).join('');
+}
+
+function createQueueRowHTML(job) {
+    const active = ACTIVE_JOB_STATUSES.includes(job.status);
+    const statusColor = {
+        completed: 'text-emerald-600',
+        error: 'text-red-600',
+        cancelled: 'text-zinc-400',
+    }[job.status] || 'text-zinc-500';
+
+    const firstFile = Object.values(job.files || {}).flat()[0];
+    const action = active
+        ? `<button class="queue-cancel-btn px-2 py-1 text-xs font-medium text-zinc-600 hover:bg-zinc-100 rounded transition-colors" data-job-id="${escapeHtml(job.id)}">Cancel</button>`
+        : firstFile
+            ? `<button class="reveal-btn px-2 py-1 text-xs font-medium text-oreilly-blue hover:bg-oreilly-blue-light rounded transition-colors" data-path="${escapeHtml(firstFile)}">Reveal</button>`
+            : '';
+
+    return `
+        <div class="px-4 py-3 bg-zinc-50 rounded-lg text-sm">
+            <div class="flex items-center gap-3">
+                <span class="flex-1 min-w-0 font-medium text-zinc-700 truncate">${escapeHtml(job.title || job.book_id)}</span>
+                <span class="text-xs font-mono text-zinc-400 flex-shrink-0">${escapeHtml(job.formats.join(', '))}</span>
+                ${action}
+            </div>
+            <div class="flex items-center gap-3 mt-1.5">
+                <div class="flex-1 h-1 bg-zinc-200 rounded-full overflow-hidden">
+                    <div class="h-full bg-oreilly-blue rounded-full transition-all duration-300" style="width: ${Number(job.percentage) || 0}%"></div>
+                </div>
+                <span class="text-xs ${statusColor} flex-shrink-0 max-w-[60%] truncate">${escapeHtml(describeJob(job))}</span>
+            </div>
+        </div>
+    `;
+}
+
 function createFileResultHTML(label, path) {
-    const escapedPath = path.replace(/'/g, "\\'");
+    // The path goes in a data attribute (read by the delegated click handler)
+    // rather than an inline onclick: Windows backslashes broke the JS string.
+    const safePath = escapeHtml(path);
     return `
         <div class="flex items-center gap-3 px-4 py-3 bg-zinc-50 rounded-lg text-sm">
-            <span class="font-medium text-zinc-700 min-w-[70px]">${label}</span>
-            <span class="flex-1 font-mono text-xs text-zinc-500 truncate" title="${path}">${path}</span>
-            <button class="px-2 py-1 text-xs font-medium text-oreilly-blue hover:bg-oreilly-blue-light rounded transition-colors" onclick="revealFile('${escapedPath}')">Reveal</button>
+            <span class="font-medium text-zinc-700 min-w-[70px]">${escapeHtml(label)}</span>
+            <span class="flex-1 font-mono text-xs text-zinc-500 truncate" title="${safePath}">${safePath}</span>
+            <button class="reveal-btn px-2 py-1 text-xs font-medium text-oreilly-blue hover:bg-oreilly-blue-light rounded transition-colors" data-path="${safePath}">Reveal</button>
         </div>
     `;
 }
@@ -1008,6 +1144,23 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cookie-modal').onclick = (e) => {
         if (e.target.id === 'cookie-modal') hideCookieModal();
     };
+
+    // Reveal / cancel buttons (rendered dynamically in results and the queue)
+    document.addEventListener('click', (e) => {
+        const revealBtn = e.target.closest('.reveal-btn');
+        if (revealBtn) {
+            revealFile(revealBtn.dataset.path);
+            return;
+        }
+        const cancelBtn = e.target.closest('.queue-cancel-btn');
+        if (cancelBtn) {
+            cancelBtn.disabled = true;
+            cancelJob(cancelBtn.dataset.jobId);
+        }
+    });
+
+    // Download queue (also restores progress after a page reload)
+    refreshQueue();
 
     // Search
     let searchTimeout;

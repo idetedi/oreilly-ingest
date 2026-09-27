@@ -20,6 +20,15 @@ python main.py --port 9000        # Custom port
 
 # Run with venv directly
 .venv/bin/python main.py
+
+# Command line (no server)
+python -m cli download <book_id> -f md,epub --chapters 1-3
+python -m cli search "query" | formats | status
+
+# Lint and tests (offline, fake O'Reilly API in tests/fakes.py)
+pip install -r requirements-dev.txt
+ruff check .
+pytest
 ```
 
 ## Architecture
@@ -51,14 +60,34 @@ python main.py --port 9000        # Custom port
 **Orchestration Plugins**:
 - `OutputPlugin` - Coordinate output generation
 - `SystemPlugin` - System information
-- `DownloaderPlugin` - Orchestrate full download workflow
+- `DownloaderPlugin` - Orchestrate full download workflow. `download()` runs phases over a
+  `DownloadContext`; output generators are listed in `_GENERATORS` (add a format there).
+  Chapters are fetched in parallel and processed in order; `.download_state.json` in the
+  book folder enables resume. Cancellation raises `core.errors.DownloadCancelled` and never
+  deletes files.
+
+**Queue**: `core/download_queue.py` (`DownloadQueue`) runs jobs sequentially on a worker
+thread; the web server enqueues through it.
+
+**HTTP**: `core/http_client.py` is thread-safe (one curl_cffi session per thread, shared
+rate limiter with a fixed "api" lane and an adaptive (AIMD) "asset" lane, retries on
+network errors and 429/5xx). Assets are only fetched for formats that use them
+(`DownloaderPlugin._IMAGE_FORMATS` / `_STYLE_FORMATS`).
 
 ### Web Server
 - `web/server.py`: HTTP server using `http.server`, serves static files from `web/static/`
-- JSON API endpoints: `/api/status`, `/api/search`, `/api/book/{id}`, `/api/download`, `/api/progress`
+- JSON API endpoints: `/api/status`, `/api/search`, `/api/book/{id}`, `/api/download` (enqueue),
+  `/api/jobs`, `/api/jobs/{id}`, `/api/jobs/{id}/cancel`, legacy `/api/progress` and `/api/cancel`
+- Every `/api/*` request must have a local `Host` (see `config.ALLOWED_HOSTS`) and POSTs with an
+  `Origin` must be same-origin. No CORS headers are sent. Escape remote data in `app.js`
+  with `escapeHtml()`.
+
+### CLI
+- `cli/main.py` (`python -m cli`): download/search/formats/status on top of the same kernel
 
 ### Key Files
-- `config.py`: BASE_URL, API_V1, API_V2, OUTPUT_DIR, COOKIES_FILE, REQUEST_DELAY
+- `config.py`: BASE_URL, API_V1, API_V2, OUTPUT_DIR, COOKIES_FILE, rate limits/retries/workers
+  (overridable via environment variables), ALLOWED_HOSTS
 - `cookies.json`: User-provided O'Reilly session cookies (BrowserCookie, OptanonConsent)
 - `output/`: Downloaded books stored here as `{book_title}/` directories
 
