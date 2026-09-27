@@ -400,6 +400,11 @@ class DownloaderPlugin(Plugin):
                 ctx.raise_if_cancelled()
                 getattr(self, method_name)(ctx, result)
 
+        # The EPUB build tree (OEBPS/) is shared with other generators (PDF),
+        # so it is only removed once every requested format has been written.
+        if "epub" in requested:
+            self.kernel["epub"].cleanup_build_artifacts(ctx.book_dir)
+
     # ------------------------------------------------------------------
     # Output generators
     # ------------------------------------------------------------------
@@ -413,6 +418,7 @@ class DownloaderPlugin(Plugin):
             output_dir=ctx.book_dir,
             css_files=ctx.css_list,
             cover_image="cover.jpg",
+            cleanup=False,
         )
         result.files["epub"] = str(epub_path)
 

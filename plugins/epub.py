@@ -18,7 +18,11 @@ class EpubPlugin(Plugin):
         output_dir: Path,
         css_files: list[str],
         cover_image: str | None = None,
+        cleanup: bool = True,
     ) -> Path:
+        """Build the EPUB. With cleanup=False the OEBPS/ build tree is kept
+        (other formats such as PDF still need it); call
+        cleanup_build_artifacts() once they are done."""
         oebps = output_dir / "OEBPS"
         oebps.mkdir(parents=True, exist_ok=True)
         (output_dir / "META-INF").mkdir(exist_ok=True)
@@ -34,12 +38,12 @@ class EpubPlugin(Plugin):
         epub_path = output_dir / f"{epub_name}.epub"
         self._create_epub_zip(output_dir, epub_path)
 
-        # Clean up build artifacts
-        self._cleanup_build_artifacts(output_dir)
+        if cleanup:
+            self.cleanup_build_artifacts(output_dir)
 
         return epub_path
 
-    def _cleanup_build_artifacts(self, output_dir: Path):
+    def cleanup_build_artifacts(self, output_dir: Path):
         """Remove intermediate EPUB build files after ZIP creation."""
         artifacts = [
             output_dir / "mimetype",
