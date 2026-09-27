@@ -14,11 +14,13 @@ For personal and educational use only. Please read the [O'Reilly Terms of Servic
 
 Inspired by [safaribooks](https://github.com/lorenzodifuccia/safaribooks) by [@lorenzodifuccia](https://github.com/lorenzodifuccia).
 
+This repository is a fork of [Mosaibah/oreilly-ingest](https://github.com/Mosaibah/oreilly-ingest).
+
 
 ## Features
 
 - **Export by chapters** - save tokens, focus on what matters
-- **LLM-ready formats** - Markdown, JSON, TOON, plain text optimized for AI
+- **LLM-ready formats** - Markdown, JSON/JSONL, TOON, plain text and RAG chunks
 - **Traditional formats** - PDF and EPUB 3
 - **O'Reilly V2 API** - fast and reliable
 - **Images & styles included** - complete book experience
@@ -33,20 +35,26 @@ Inspired by [safaribooks](https://github.com/lorenzodifuccia/safaribooks) by [@l
 ### Docker
 
 ```bash
-git clone https://github.com/mosaibah/oreilly-downloader.git
-cd oreilly-downloader
+git clone https://github.com/idetedi/oreilly-ingest.git
+cd oreilly-ingest
 docker compose up -d
 ```
+
+The image is rebuilt on every `docker compose up`, so pulling new code is enough. Cookies are
+kept in `data/` and books in `output/` (both mounted as volumes).
 
 ### Python
 
 ```bash
-git clone https://github.com/mosaibah/oreilly-downloader.git
-cd oreilly-downloader
-python3 -m venv .venv && source .venv/bin/activate
+git clone https://github.com/idetedi/oreilly-ingest.git
+cd oreilly-ingest
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python main.py
 ```
+
+PDF output needs WeasyPrint's system libraries (Pango); see the
+[WeasyPrint install guide](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html).
 
 Then open http://localhost:8000 (add `-v` for debug logging).
 
@@ -69,7 +77,8 @@ Click "Set Cookies" in the web interface and follow the steps:
 
 <img src="docs/cookie-modal.png" alt="Cookie Setup" style="max-width:320px; height:auto;">
 
-O'Reilly's session token is short-lived. On macOS/Linux with Chrome,
+O'Reilly's session token is short-lived: if downloads fail with "Session expired", set fresh
+cookies. On macOS/Linux with Chrome,
 `python scripts/refresh_cookies.py --watch` keeps the cookies in sync
 (needs `pip install pycookiecheat`).
 
@@ -84,6 +93,7 @@ Environment variables (all optional):
 | `REQUEST_DELAY` | `0.5` | Min. seconds between API/chapter requests (all threads) |
 | `ASSET_REQUEST_DELAY` | `0.25` | Starting gap between image/CSS requests (all threads) |
 | `ASSET_MIN_DELAY` / `ASSET_MAX_DELAY` | `0.1` / `2.0` | Bounds for the adaptive image/CSS rate (~10/s max) |
+| `ASSET_SPEEDUP_EVERY` | `20` | Consecutive successful image/CSS requests before speeding up |
 | `MAX_RETRIES` / `RETRY_BACKOFF` | `4` / `1.5` | Retries for network errors and 429/5xx responses |
 | `REQUEST_TIMEOUT` | `30` | Per-request timeout in seconds |
 | `ALLOWED_HOSTS` | – | Extra host names the web server accepts (comma-separated) |
@@ -92,6 +102,19 @@ Images and CSS use an adaptive rate: it speeds up while O'Reilly answers normall
 on any sign of throttling (403/429/5xx). Keep the bounds conservative: O'Reilly's CDN (Akamai)
 blocks bursty clients. Text-only formats (JSON, TOON, plain text, chunks) skip images and CSS
 entirely, and the Markdown export ships its images in `Markdown/Images/`.
+
+## Output
+
+Each book gets its own folder, `output/<book-title>/`:
+
+```
+Book Title.epub / .pdf / .json / .jsonl / .toon / .txt / _chunks.jsonl
+Markdown/            one .md per chapter + README.md + Images/
+OEBPS/               chapter XHTML, images and CSS (removed after an EPUB is built)
+.download_state.json chapters already downloaded, used to resume
+```
+
+Downloading another format of the same book later reuses the chapters already on disk.
 
 ## Security
 
@@ -106,10 +129,11 @@ Plugin-based microkernel design:
 
 | Layer | Components |
 |-------|------------|
-| **Kernel** | Plugin registry, shared HTTP client |
-| **Core** | Auth, Book, Chapters, Assets, HtmlProcessor |
-| **Output** | Epub, Markdown, Pdf, PlainText, JsonExport, ToonExport |
-| **Utility** | Chunking, Token, Downloader |
+| **Kernel** | Plugin registry, shared thread-safe HTTP client (rate limiting, retries) |
+| **Data** | Auth, Book, Chapters, Assets, HtmlProcessor |
+| **Output** | Epub, Markdown, Pdf, PlainText, JsonExport, ToonExport, Chunking, Token |
+| **Orchestration** | Downloader (pipeline, resume), Output (folders), System (file dialogs) |
+| **Clients** | Web server + download queue, CLI |
 
 ### API
 
@@ -140,11 +164,14 @@ pytest            # offline: uses a fake O'Reilly API (tests/fakes.py)
 
 ## Contributing
 
-Found a bug or have an idea? PRs and issues are always welcome!
+Found a bug or have an idea? PRs and issues are always welcome! Please use
+[Conventional Commits](https://www.conventionalcommits.org/) and make sure `ruff check .`
+and `pytest` pass (CI runs both).
 
 
 ## Recent Changes
 
+- **Hardening, performance and new clients** — local API locked to localhost (no CORS, Host/Origin checks); parallel chapter/asset downloads with an adaptive image rate and retries; resumable downloads; download queue with a "Downloads" panel; `python -m cli`; images/CSS skipped for text-only formats; Markdown export ships its images; fixes for Windows (UTF-8 output, "Reveal"), JWT decoding, EPUB+PDF in one run and cancellation deleting earlier downloads; offline test suite and CI.
 - **Chunking: streaming & memory fix** — `chunk_book()` now streams chunks directly to disk instead of accumulating in memory. Replaced `tiktoken` tokenizer with a word-count heuristic to avoid memory spikes on large books. (@zirkleta)
 - **System: command injection fix** — `_show_macos_picker()` rejects paths containing `"` before interpolating into osascript, preventing command injection via crafted directory names. (@zirkleta)
 - **`scripts/patch_chunk_titles.py`** — New utility script that backfills `book_title` into existing `*_chunks.jsonl` files in the output directory. (@zirkleta)

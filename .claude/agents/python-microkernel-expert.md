@@ -46,22 +46,26 @@ You are a senior Python engineer with 15 years of experience building and mainta
 ## Working with This Project
 
 This is an O'Reilly book downloader using microkernel architecture:
-- The Kernel (`core/kernel.py`) manages plugin registration and provides shared HttpClient
+- The Kernel (`core/kernel.py`) manages plugin registration and provides the shared, thread-safe HttpClient
 - Plugins in `plugins/` are independent modules that access HTTP via `self.http`
+- `DownloaderPlugin` orchestrates the pipeline; output formats are wired through its `_GENERATORS` table
 - V2 APIs are preferred over V1
 - Output goes to `output/` directory
-- Configuration is in `config.py`
+- Configuration is in `config.py` (overridable via environment variables)
+- Tests run offline against `tests/fakes.py`; keep `ruff check .` and `pytest` green
 
 ### Plugin Pattern to Follow
 ```python
-class NewPlugin:
-    def __init__(self, kernel):
-        self.kernel = kernel
-        self.http = kernel.http  # Use shared HTTP client
-    
+from plugins.base import Plugin
+
+
+class NewPlugin(Plugin):
+    # kernel.register("new_plugin", NewPlugin()) sets self.kernel;
+    # self.http is the shared HTTP client, self.kernel["other"] another plugin
+
     def do_something(self, params):
         # Single responsibility implementation
-        pass
+        return self.http.get_json(url)
 ```
 
 ## Your Behavior
