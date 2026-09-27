@@ -7,12 +7,9 @@ from pathlib import Path
 from typing import Callable
 
 import config
+from core.errors import DownloadCancelled
 from plugins.base import Plugin
 from plugins.chunking import ChunkConfig
-
-
-class DownloadCancelled(Exception):
-    """Raised when the user cancels a download in progress."""
 
 
 @dataclass
@@ -343,7 +340,9 @@ class DownloaderPlugin(Plugin):
                     f"{pct:2d}% - Downloading CSS ({completed:>{css_width}}/{len(css_list)})",
                 )
 
-        assets_plugin.download_all_css(css_list, oebps, progress_callback=css_progress)
+        assets_plugin.download_all_css(
+            css_list, oebps, progress_callback=css_progress, cancel_check=cancel_check
+        )
 
         # Download assets referenced in CSS (e.g. url() images in ::after)
         if not skip_images:
@@ -365,8 +364,11 @@ class DownloaderPlugin(Plugin):
                     )
 
             assets_plugin.download_all_images(
-                image_list, oebps, progress_callback=image_progress
+                image_list, oebps, progress_callback=image_progress, cancel_check=cancel_check
             )
+
+        if check_cancel():
+            raise DownloadCancelled("Download cancelled by user")
 
         # Phase 6: Generate output formats
         result = DownloadResult(
