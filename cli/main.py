@@ -143,7 +143,7 @@ def cmd_search(kernel, args) -> int:
         return 1
     for book in results:
         authors = ", ".join(book.get("authors") or []) or "Unknown author"
-        print(f"{book['id']:<16} {book['title']} — {authors}")
+        print(f"{book['id']:<16} {book['title']} - {authors}")
     return 0
 
 
@@ -194,6 +194,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Book titles are often non-ASCII; never crash on a legacy console code page.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
