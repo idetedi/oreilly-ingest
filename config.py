@@ -31,14 +31,19 @@ API_V1 = f"{BASE_URL}/api/v1"
 API_V2 = f"{BASE_URL}/api/v2"
 
 # Minimum seconds between the start of two requests, shared by all threads.
-# API/chapter requests use REQUEST_DELAY; images and CSS use the lighter
-# ASSET_REQUEST_DELAY. Keep these conservative: Akamai throttles bursts.
+# API/chapter requests use a fixed REQUEST_DELAY. Images and CSS start at
+# ASSET_REQUEST_DELAY and adapt: faster (down to ASSET_MIN_DELAY, ~10/s) while
+# the server answers fine, twice as slow (up to ASSET_MAX_DELAY) on any sign of
+# throttling. Keep these conservative: Akamai blocks bursty clients.
 REQUEST_DELAY = _env_float("REQUEST_DELAY", 0.5)
 ASSET_REQUEST_DELAY = _env_float("ASSET_REQUEST_DELAY", 0.25)
+ASSET_MIN_DELAY = _env_float("ASSET_MIN_DELAY", 0.1)
+ASSET_MAX_DELAY = _env_float("ASSET_MAX_DELAY", 2.0)
+ASSET_SPEEDUP_EVERY = max(1, _env_int("ASSET_SPEEDUP_EVERY", 20))
 REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 30)
 
 # Parallel workers for chapter and asset downloads (rate limits still apply).
-DOWNLOAD_WORKERS = max(1, _env_int("DOWNLOAD_WORKERS", 4))
+DOWNLOAD_WORKERS = max(1, _env_int("DOWNLOAD_WORKERS", 6))
 
 # Retry transient failures (timeouts, connection resets, 429/5xx responses)
 # so a single bad response doesn't abort a whole download.

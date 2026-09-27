@@ -29,6 +29,12 @@ class HttpClient:
         # Global rate limiting across threads, one schedule per lane.
         self._rate_lock = threading.Lock()
         self._next_slot: dict[str, float] = {}
+        # The asset lane adapts its delay (see _record_outcome); the API lane
+        # stays fixed at REQUEST_DELAY.
+        self._lane_delay: dict[str, float] = {
+            "asset": min(max(config.ASSET_REQUEST_DELAY, config.ASSET_MIN_DELAY), config.ASSET_MAX_DELAY)
+        }
+        self._lane_streak: dict[str, int] = {}
 
         self._auth_cookies = self._read_cookies(cookies_file or config.COOKIES_FILE)
 
@@ -65,13 +71,48 @@ class HttpClient:
 
     def _rate_limit(self, lane: str):
         """Space request starts by the lane's delay, across all threads."""
-        delay = config.ASSET_REQUEST_DELAY if lane == "asset" else config.REQUEST_DELAY
         with self._rate_lock:
+            delay = self._lane_delay.get(lane, config.REQUEST_DELAY)
             now = time.monotonic()
             start = max(now, self._next_slot.get(lane, 0.0))
             self._next_slot[lane] = start + delay
         if start > now:
             time.sleep(start - now)
+
+    def lane_delay(self, lane: str) -> float:
+        with self._rate_lock:
+            return self._lane_delay.get(lane, config.REQUEST_DELAY)
+
+    def _record_outcome(self, lane: str, status: int | None):
+        """Adapt an adaptive lane's delay to how the server is responding (AIMD).
+
+        Every ASSET_SPEEDUP_EVERY consecutive successes shorten the delay by
+        15% down to ASSET_MIN_DELAY; any throttling signal (403, 429, 5xx or a
+        network error, status=None) doubles it up to ASSET_MAX_DELAY. Other
+        responses (e.g. 404) leave it unchanged.
+        """
+        if lane not in self._lane_delay:
+            return
+        throttled = status is None or status in (403, 429) or status >= 500
+        with self._rate_lock:
+            delay = self._lane_delay[lane]
+            if throttled:
+                self._lane_streak[lane] = 0
+                new_delay = min(config.ASSET_MAX_DELAY, delay * 2)
+                if new_delay != delay:
+                    logger.info("Server pushing back (%s): %s requests slowed to %.2fs apart", status, lane, new_delay)
+            elif status < 400:
+                streak = self._lane_streak.get(lane, 0) + 1
+                self._lane_streak[lane] = streak
+                if streak < config.ASSET_SPEEDUP_EVERY:
+                    return
+                self._lane_streak[lane] = 0
+                new_delay = max(config.ASSET_MIN_DELAY, delay * 0.85)
+                if new_delay != delay:
+                    logger.debug("%s requests sped up to %.2fs apart", lane, new_delay)
+            else:
+                return
+            self._lane_delay[lane] = new_delay
 
     @staticmethod
     def _retry_delay(attempt: int, response=None) -> float:
@@ -103,10 +144,12 @@ class HttpClient:
                 response = session.get(url, **kwargs)
             except Exception as e:  # curl_cffi raises on timeout/connection errors
                 last_exc = e
+                self._record_outcome(lane, None)
                 if not is_last:
                     logger.debug("Request failed (%s), retrying: %s", e, url)
                     time.sleep(self._retry_delay(attempt))
                 continue
+            self._record_outcome(lane, response.status_code)
             if response.status_code in config.RETRY_STATUS_CODES and not is_last:
                 logger.debug("HTTP %s, retrying: %s", response.status_code, url)
                 time.sleep(self._retry_delay(attempt, response))
@@ -134,6 +177,11 @@ class HttpClient:
 
     def _raise_for_auth_error(self, response) -> None:
         """Raise a descriptive RuntimeError on 4xx auth errors instead of raw HTTP errors."""
+        if response.status_code == 401:
+            raise RuntimeError(
+                "Session expired or not authenticated (HTTP 401). Please copy fresh cookies from your "
+                "browser and POST them to /api/cookies."
+            )
         if response.status_code == 403:
             if not self._auth_cookies:
                 raise RuntimeError(

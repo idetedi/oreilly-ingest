@@ -210,3 +210,67 @@ def test_extract_body_round_trips_wrap_xhtml(tmp_path):
     path = Path(tmp_path / "c.xhtml")
     path.write_text(processor.wrap_xhtml("<p>Hola — ñ</p>", [], "T"), encoding="utf-8")
     assert processor.extract_body(path) == "<p>Hola — ñ</p>"
+
+
+# -- adaptive asset rate -------------------------------------------------------------
+
+
+@pytest.fixture
+def adaptive(monkeypatch):
+    monkeypatch.setattr(config, "ASSET_REQUEST_DELAY", 0.25)
+    monkeypatch.setattr(config, "ASSET_MIN_DELAY", 0.1)
+    monkeypatch.setattr(config, "ASSET_MAX_DELAY", 2.0)
+    monkeypatch.setattr(config, "ASSET_SPEEDUP_EVERY", 5)
+
+
+def test_asset_lane_speeds_up_to_the_floor(tmp_path, adaptive):
+    client = _client(tmp_path)
+    for _ in range(4):
+        client._record_outcome("asset", 200)
+    assert client.lane_delay("asset") == 0.25, "no change before a full streak"
+    for _ in range(500):
+        client._record_outcome("asset", 200)
+    assert client.lane_delay("asset") == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize("signal", [429, 403, 503, None])
+def test_asset_lane_backs_off_on_throttling(tmp_path, adaptive, signal):
+    client = _client(tmp_path)
+    client._record_outcome("asset", signal)
+    assert client.lane_delay("asset") == pytest.approx(0.5)
+    for _ in range(10):
+        client._record_outcome("asset", signal)
+    assert client.lane_delay("asset") == pytest.approx(2.0)
+
+
+def test_throttling_resets_the_success_streak(tmp_path, adaptive):
+    client = _client(tmp_path)
+    for _ in range(4):
+        client._record_outcome("asset", 200)
+    client._record_outcome("asset", 429)
+    for _ in range(4):
+        client._record_outcome("asset", 200)
+    assert client.lane_delay("asset") == pytest.approx(0.5)
+
+
+def test_api_lane_and_not_found_are_not_adaptive(tmp_path, adaptive, monkeypatch):
+    monkeypatch.setattr(config, "REQUEST_DELAY", 0.5)
+    client = _client(tmp_path)
+    client._record_outcome("api", 429)
+    client._record_outcome("asset", 404)
+    assert client.lane_delay("api") == 0.5
+    assert client.lane_delay("asset") == 0.25
+
+
+def test_get_feeds_the_adaptive_lane(tmp_path, fast_retries, adaptive):
+    client = _client(tmp_path)
+    client._local.session = _Session([_Response(429), _Response(200)])
+    client.get("/img.png", lane="asset")
+    assert client.lane_delay("asset") == pytest.approx(0.5)
+
+
+def test_401_is_reported_as_expired_session(tmp_path, fast_retries):
+    client = _client(tmp_path)
+    client._local.session = _Session([_Response(401)])
+    with pytest.raises(RuntimeError, match="Session expired"):
+        client.get_json("/x")
