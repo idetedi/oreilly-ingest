@@ -73,6 +73,19 @@ class DownloadContext:
     def oebps(self) -> Path:
         return self.book_dir / "OEBPS"
 
+    def add_images(self, urls):
+        """Record image URLs in one canonical (absolute) form.
+
+        related_assets lists absolute URLs while the chapter HTML uses
+        root-relative ones for the same files; normalising here keeps each
+        image once. Relative srcs (no scheme, no leading "/") are ignored.
+        """
+        for url in urls:
+            if url.startswith("/"):
+                self.image_urls.add(f"{config.BASE_URL}{url}")
+            elif url.startswith("http"):
+                self.image_urls.add(url)
+
     def report(self, status: str, percentage: int = 0, message: str = "", **extra):
         if self.progress_callback:
             self.progress_callback(
@@ -395,8 +408,8 @@ class DownloaderPlugin(Plugin):
         xhtml = ctx.oebps / ch["filename"].replace(".html", ".xhtml")
         processed = self.kernel["html_processor"].extract_body(xhtml)
         ctx.css_urls.update(ch["stylesheets"])
-        ctx.image_urls.update(ch["images"])
-        ctx.image_urls.update(entry.get("images", []))
+        ctx.add_images(ch["images"])
+        ctx.add_images(entry.get("images", []))
         ctx.chapters_data.append((ch["filename"], ch["title"], processed))
 
     # --------------------------------------------------------------------
@@ -415,8 +428,8 @@ class DownloaderPlugin(Plugin):
         images = [url for url in images if url.startswith(("http", "/"))]
 
         ctx.css_urls.update(ch["stylesheets"])
-        ctx.image_urls.update(ch["images"])
-        ctx.image_urls.update(images)
+        ctx.add_images(ch["images"])
+        ctx.add_images(images)
 
         css_refs = [f"{path_prefix}Styles/Style{j:02d}.css" for j in range(len(ctx.css_urls))]
         xhtml = html_processor.wrap_xhtml(processed, css_refs, ch["title"])
@@ -434,7 +447,7 @@ class DownloaderPlugin(Plugin):
         html_processor = self.kernel["html_processor"]
         ctx.report("downloading_assets", 80)
 
-        image_list = [f"{config.BASE_URL}{url}" if url.startswith("/") else url for url in ctx.image_urls]
+        image_list = sorted(ctx.image_urls)
         # Sorted so StyleNN.css maps to the same URL on every run (resume reuses
         # the files already on disk).
         ctx.css_list = sorted(ctx.css_urls)

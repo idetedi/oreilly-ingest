@@ -112,3 +112,14 @@ def test_resume_ignored_when_skip_images_changes(tmp_path):
     http = _interrupted_download(tmp_path)
     download(make_kernel(http), tmp_path, formats=["markdown"], skip_images=True)
     assert _chapter_fetches(http) == ["ch01.html", "ch02.html", "ch03.html"]
+
+
+def test_each_image_is_requested_once(tmp_path):
+    """related_assets (absolute) and chapter HTML (root-relative) name the same files."""
+    http = FakeHttp()
+    events = []
+    download(make_kernel(http), tmp_path, formats=["markdown"], progress_callback=events.append)
+
+    image_calls = [u for u in http.calls if "/assets/" in u]
+    assert sorted(image_calls) == sorted(set(image_calls)) and len(image_calls) == 2
+    assert any("images (2/2)" in e.message for e in events), "progress counts unique images"

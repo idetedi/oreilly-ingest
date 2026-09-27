@@ -7,10 +7,13 @@ from core.kernel import Kernel, create_default_kernel
 
 BOOK_ID = "9781234567890"
 FILES = f"{config.API_V2}/epubs/urn:orm:book:{BOOK_ID}/files"
+# The chapter HTML references assets root-relative while related_assets lists
+# the same files as absolute URLs (as the real API does).
+ROOTED_FILES = FILES.removeprefix(config.BASE_URL)
 
 CHAPTERS = [
     ("ch01.html", "Chapter 1: Überblick", "<p>First chapter — café</p><img src='assets/fig1.png'/>"),
-    ("ch02.html", "Chapter 2", "<p>Second chapter</p>"),
+    ("ch02.html", "Chapter 2", f"<p>Second chapter</p><img src='{ROOTED_FILES}/assets/fig1.png'/>"),
     ("ch03.html", "Chapter 3", "<p>Third chapter</p><img src='assets/fig2.png?v=2'/>"),
 ]
 
