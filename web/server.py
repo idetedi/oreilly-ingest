@@ -1,18 +1,20 @@
 """Web server for O'Reilly Ingest."""
 
 import json
+import logging
 import os
 import re
 import threading
-import traceback
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import config
 from core import Kernel, create_default_kernel
 from plugins import ChunkConfig
 from plugins.downloader import DownloadCancelled, DownloadProgress
-import config
+
+logger = logging.getLogger(__name__)
 
 
 class DownloaderHandler(SimpleHTTPRequestHandler):
@@ -66,14 +68,14 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         try:
             self._route_get()
         except Exception as e:
-            traceback.print_exc()
+            logger.exception("Unhandled error")
             self._send_json({"error": str(e)}, 500)
 
     def do_POST(self):
         try:
             self._route_post()
         except Exception as e:
-            traceback.print_exc()
+            logger.exception("Unhandled error")
             self._send_json({"error": str(e)}, 500)
 
     def _route_get(self):
@@ -276,7 +278,6 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         """Start a book download."""
         book_id = data.get("book_id")
         output_format = data.get("format", "epub")
-        print(f"[DEBUG] Received format from request: '{output_format}' (raw data: {data.get('format')})")
         selected_chapters = data.get("chapters")
         output_dir_str = data.get("output_dir")
         chunking_opts = data.get("chunking", {})
@@ -317,7 +318,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         # Parse formats using plugin (single source of truth)
         from plugins.downloader import DownloaderPlugin
         formats = DownloaderPlugin.parse_formats(output_format)
-        print(f"[DEBUG] Parsed formats: {formats}")
+        logger.debug("Download requested: book=%s formats=%s", book_id, formats)
 
         # Start download in background thread
         thread = threading.Thread(
@@ -368,7 +369,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         except DownloadCancelled as e:
             self._set_progress({"status": "cancelled", "error": str(e)})
         except Exception as e:
-            traceback.print_exc()
+            logger.exception("Download of %s failed", book_id)
             self._set_progress({"status": "error", "error": str(e)})
 
     def _on_progress(self, progress: DownloadProgress):
@@ -393,7 +394,7 @@ class DownloaderHandler(SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
     def log_message(self, format, *args):
-        print(f"[HTTP] {args[0]}")
+        logger.debug("%s - %s", self.address_string(), format % args)
 
 
 def create_server(host: str = "localhost", port: int = 8000) -> ThreadingHTTPServer:
@@ -412,5 +413,5 @@ def create_server(host: str = "localhost", port: int = 8000) -> ThreadingHTTPSer
 def run_server(host: str = "localhost", port: int = 8000):
     """Start the HTTP server."""
     server = create_server(host, port)
-    print(f"Server running at http://{host}:{port}")
+    logger.info("Server running at http://%s:%s", host, port)
     server.serve_forever()

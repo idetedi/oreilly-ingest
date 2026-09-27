@@ -1,9 +1,10 @@
 import re
 from urllib.parse import quote
 
-from .base import Plugin
 import config
+from core.types import BookInfo
 
+from .base import Plugin
 
 _COVER_WIDTH_RE = re.compile(r'/\d+w/?$')
 _HIGH_RES_COVER_WIDTH = '1200w'
@@ -24,7 +25,7 @@ def _upgrade_cover_url(url: str) -> str:
 
 
 class BookPlugin(Plugin):
-    def fetch(self, book_id: str) -> dict:
+    def fetch(self, book_id: str) -> BookInfo:
         search_data = self._fetch_search(book_id)
         epub_data = self._fetch_epub(book_id)
 

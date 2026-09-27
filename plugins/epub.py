@@ -1,12 +1,12 @@
 import html
-import re
 import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from utils import sanitize_filename
+
 from .base import Plugin
-from utils import sanitize_filename, slugify
 
 
 class EpubPlugin(Plugin):
@@ -100,7 +100,7 @@ class EpubPlugin(Plugin):
                 f'    <item id="{item_id}" href="{filename}" media-type="application/xhtml+xml"/>'
             )
 
-        for i, css in enumerate(css_files):
+        for i, _css in enumerate(css_files):
             manifest_items.append(
                 f'    <item id="css{i:02d}" href="Styles/Style{i:02d}.css" media-type="text/css"/>'
             )
@@ -122,7 +122,7 @@ class EpubPlugin(Plugin):
                 )
 
         spine_items = []
-        for i, ch in enumerate(chapters):
+        for i, _ch in enumerate(chapters):
             spine_items.append(f'    <itemref idref="ch{i:03d}"/>')
 
         modified_timestamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')

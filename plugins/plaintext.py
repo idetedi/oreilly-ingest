@@ -40,7 +40,7 @@ class PlainTextPlugin(Plugin):
 
         content_parts = [self._format_metadata_header(book_metadata)]
 
-        for i, (filename, chapter_title, html) in enumerate(chapters_data, 1):
+        for i, (_filename, chapter_title, html) in enumerate(chapters_data, 1):
             text = self._extractor.extract_text_only(html)
             content_parts.append(self._format_chapter(i, chapter_title, text))
 

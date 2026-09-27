@@ -20,22 +20,22 @@ class Kernel:
 def create_default_kernel() -> Kernel:
     """Create a kernel with all standard plugins registered."""
     from plugins import (
+        AssetsPlugin,
         AuthPlugin,
         BookPlugin,
         ChaptersPlugin,
-        AssetsPlugin,
-        HtmlProcessorPlugin,
-        EpubPlugin,
-        MarkdownPlugin,
-        PdfPlugin,
-        TokenPlugin,
-        PlainTextPlugin,
-        JsonExportPlugin,
-        ToonExportPlugin,
         ChunkingPlugin,
-        OutputPlugin,
-        SystemPlugin,
         DownloaderPlugin,
+        EpubPlugin,
+        HtmlProcessorPlugin,
+        JsonExportPlugin,
+        MarkdownPlugin,
+        OutputPlugin,
+        PdfPlugin,
+        PlainTextPlugin,
+        SystemPlugin,
+        TokenPlugin,
+        ToonExportPlugin,
     )
 
     kernel = Kernel()

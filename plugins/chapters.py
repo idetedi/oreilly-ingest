@@ -1,6 +1,7 @@
-from .base import Plugin
-from core.types import ChapterInfo
 import config
+from core.types import ChapterInfo
+
+from .base import Plugin
 
 
 class ChaptersPlugin(Plugin):

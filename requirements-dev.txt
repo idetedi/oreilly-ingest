@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8.0
+ruff>=0.6
+# Optional: only needed by scripts/refresh_cookies.py
+pycookiecheat>=0.8
