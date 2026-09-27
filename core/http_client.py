@@ -1,12 +1,17 @@
 import base64
 import contextlib
 import json
+import logging
+import random
+import threading
 import time
 from pathlib import Path
 
 from curl_cffi import requests
 
 import config
+
+logger = logging.getLogger(__name__)
 
 
 class HttpClient:
@@ -18,53 +23,95 @@ class HttpClient:
 
     def __init__(self, cookies_file: Path | None = None):
         self._auth_cookies: dict = {}
-        self.session = requests.Session(impersonate="safari17_0")
-        self.session.headers.update(config.HEADERS)
-        self.last_request_time = 0
+        # curl_cffi sessions are not thread-safe: each thread gets its own,
+        # all configured identically and replaying the same auth cookies.
+        self._local = threading.local()
+        # Global rate limiting across threads, one schedule per lane.
+        self._rate_lock = threading.Lock()
+        self._next_slot: dict[str, float] = {}
 
-        cookies_path = cookies_file or config.COOKIES_FILE
-        if cookies_path.exists():
-            self._load_cookies(cookies_path)
+        self._auth_cookies = self._read_cookies(cookies_file or config.COOKIES_FILE)
 
-    def _load_cookies(self, path: Path):
-        with contextlib.suppress(json.JSONDecodeError, ValueError):
-            with open(path) as f:
-                cookies = json.load(f)
+    @property
+    def session(self) -> requests.Session:
+        session = getattr(self._local, "session", None)
+        if session is None:
+            session = requests.Session(impersonate="safari17_0")
+            session.headers.update(config.HEADERS)
+            self._local.session = session
+        return session
+
+    @staticmethod
+    def _read_cookies(path: Path) -> dict:
+        """Read the cookie JSON file; returns {} when missing or invalid.
+
+        All cookies are kept, including the Akamai bot-management cookies
+        (_abck, bm_*) — they are required to pass Akamai (see class note).
+        """
+        with contextlib.suppress(OSError, json.JSONDecodeError, ValueError):
+            cookies = json.loads(path.read_text())
             if isinstance(cookies, dict):
-                # Keep all cookies, including the Akamai bot-management cookies
-                # (_abck, bm_*) — they are required to pass Akamai (see class note).
-                self._auth_cookies = dict(cookies)
+                return dict(cookies)
+        return {}
 
-    def _apply_auth_cookies(self):
+    def _apply_auth_cookies(self, session: requests.Session):
         """Reset the session to the original browser cookies before each request.
 
         Replaying the known-good browser cookies (rather than the evolving set
         Akamai injects via Set-Cookie) keeps every request looking like the
         original browser session."""
-        self.session.cookies.clear()
-        self.session.cookies.update(self._auth_cookies)
+        session.cookies.clear()
+        session.cookies.update(self._auth_cookies)
 
-    def _rate_limit(self):
-        elapsed = time.time() - self.last_request_time
-        if elapsed < config.REQUEST_DELAY:
-            time.sleep(config.REQUEST_DELAY - elapsed)
-        self.last_request_time = time.time()
+    def _rate_limit(self, lane: str):
+        """Space request starts by the lane's delay, across all threads."""
+        delay = config.ASSET_REQUEST_DELAY if lane == "asset" else config.REQUEST_DELAY
+        with self._rate_lock:
+            now = time.monotonic()
+            start = max(now, self._next_slot.get(lane, 0.0))
+            self._next_slot[lane] = start + delay
+        if start > now:
+            time.sleep(start - now)
 
-    def get(self, url: str, **kwargs) -> requests.Response:
+    @staticmethod
+    def _retry_delay(attempt: int, response=None) -> float:
+        """Exponential backoff with jitter, honouring a numeric Retry-After."""
+        if response is not None:
+            retry_after = response.headers.get("Retry-After")
+            if retry_after and retry_after.strip().isdigit():
+                return min(float(retry_after), 60.0)
+        return config.RETRY_BACKOFF * (2**attempt) + random.uniform(0, 0.5)
+
+    def get(self, url: str, lane: str = "api", **kwargs) -> requests.Response:
+        """GET with rate limiting and retries.
+
+        Retries on network errors and on transient status codes (429/5xx).
+        After the last attempt the final response is returned (or the last
+        exception raised) so callers can report the real error.
+        """
         if not url.startswith("http"):
             url = config.BASE_URL + url
         kwargs.setdefault("timeout", config.REQUEST_TIMEOUT)
 
         last_exc = None
         for attempt in range(config.MAX_RETRIES):
-            self._rate_limit()
-            self._apply_auth_cookies()
+            self._rate_limit(lane)
+            session = self.session
+            self._apply_auth_cookies(session)
+            is_last = attempt == config.MAX_RETRIES - 1
             try:
-                return self.session.get(url, **kwargs)
+                response = session.get(url, **kwargs)
             except Exception as e:  # curl_cffi raises on timeout/connection errors
                 last_exc = e
-                if attempt < config.MAX_RETRIES - 1:
-                    time.sleep(config.RETRY_BACKOFF * (attempt + 1))
+                if not is_last:
+                    logger.debug("Request failed (%s), retrying: %s", e, url)
+                    time.sleep(self._retry_delay(attempt))
+                continue
+            if response.status_code in config.RETRY_STATUS_CODES and not is_last:
+                logger.debug("HTTP %s, retrying: %s", response.status_code, url)
+                time.sleep(self._retry_delay(attempt, response))
+                continue
+            return response
         raise last_exc
 
     def get_json(self, url: str, **kwargs) -> dict:
@@ -143,7 +190,6 @@ class HttpClient:
 
     def reload_cookies(self):
         """Clear and reload cookies from file. Used after browser login."""
-        self._auth_cookies = {}
-        self.session.cookies.clear()
-        if config.COOKIES_FILE.exists():
-            self._load_cookies(config.COOKIES_FILE)
+        # Every request re-applies _auth_cookies to its thread's session, so
+        # swapping the dict (atomically) is enough to update all threads.
+        self._auth_cookies = self._read_cookies(config.COOKIES_FILE)

@@ -1,10 +1,12 @@
 """Download orchestration plugin."""
 
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+import config
 from plugins.base import Plugin
 from plugins.chunking import ChunkConfig
 
@@ -242,70 +244,79 @@ class DownloaderPlugin(Plugin):
         chapter_times = []
         chapter_start_time = time.time()
 
-        for i, ch in enumerate(chapters):
-            if check_cancel():
-                # Partial files are kept on purpose: removing book_dir would also
-                # delete earlier downloads of this book (same folder).
-                raise DownloadCancelled("Download cancelled by user")
+        # Fetch chapter HTML in parallel (the HTTP client's rate limiter still
+        # spaces the requests) but process and write chapters strictly in order.
+        with ThreadPoolExecutor(max_workers=config.DOWNLOAD_WORKERS) as pool:
+            pending = [pool.submit(chapters_plugin.fetch_content, ch["content_url"]) for ch in chapters]
+            try:
+                for i, ch in enumerate(chapters):
+                    if check_cancel():
+                        # Partial files are kept on purpose: removing book_dir would also
+                        # delete earlier downloads of this book (same folder).
+                        raise DownloadCancelled("Download cancelled by user")
 
-            # Calculate percentage (chapters are 15%-80% of work)
-            chapter_pct = 15 + int((i / total_chapters) * 65) if total_chapters > 0 else 15
+                    # Calculate percentage (chapters are 15%-80% of work)
+                    chapter_pct = 15 + int((i / total_chapters) * 65) if total_chapters > 0 else 15
 
-            report(
-                "processing_chapters",
-                chapter_pct,
-                current_chapter=i + 1,
-                total_chapters=total_chapters,
-                chapter_title=ch.get("title", ""),
-            )
+                    report(
+                        "processing_chapters",
+                        chapter_pct,
+                        current_chapter=i + 1,
+                        total_chapters=total_chapters,
+                        chapter_title=ch.get("title", ""),
+                    )
 
-            # Compute relative path prefix based on chapter depth in OEBPS
-            filename = ch["filename"].replace(".html", ".xhtml")
-            depth = filename.count("/")
-            path_prefix = "../" * depth if depth > 0 else ""
+                    # Compute relative path prefix based on chapter depth in OEBPS
+                    filename = ch["filename"].replace(".html", ".xhtml")
+                    depth = filename.count("/")
+                    path_prefix = "../" * depth if depth > 0 else ""
 
-            # Fetch and process chapter content
-            raw_html = chapters_plugin.fetch_content(ch["content_url"])
-            processed, images = html_processor.process(
-                raw_html, book_id, skip_images=skip_images, path_prefix=path_prefix
-            )
+                    # Fetch and process chapter content
+                    raw_html = pending[i].result()
+                    processed, images = html_processor.process(
+                        raw_html, book_id, skip_images=skip_images, path_prefix=path_prefix
+                    )
 
-            # Collect CSS and image URLs
-            all_css_urls.update(ch["stylesheets"])
-            for img_url in ch["images"]:
-                all_image_urls.add(img_url)
-            for img_url in images:
-                if img_url.startswith("http") or img_url.startswith("/"):
-                    all_image_urls.add(img_url)
+                    # Collect CSS and image URLs
+                    all_css_urls.update(ch["stylesheets"])
+                    for img_url in ch["images"]:
+                        all_image_urls.add(img_url)
+                    for img_url in images:
+                        if img_url.startswith("http") or img_url.startswith("/"):
+                            all_image_urls.add(img_url)
 
-            # Wrap in XHTML
-            css_refs = [f"{path_prefix}Styles/Style{j:02d}.css" for j in range(len(all_css_urls))]
-            xhtml = html_processor.wrap_xhtml(processed, css_refs, ch["title"])
+                    # Wrap in XHTML
+                    css_refs = [f"{path_prefix}Styles/Style{j:02d}.css" for j in range(len(all_css_urls))]
+                    xhtml = html_processor.wrap_xhtml(processed, css_refs, ch["title"])
 
-            # Write chapter file
-            file_path = oebps / filename
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(xhtml, encoding='utf-8')
+                    # Write chapter file
+                    file_path = oebps / filename
+                    file_path.parent.mkdir(parents=True, exist_ok=True)
+                    file_path.write_text(xhtml, encoding='utf-8')
 
-            chapters_data.append((ch["filename"], ch["title"], processed))
+                    chapters_data.append((ch["filename"], ch["title"], processed))
 
-            # Calculate ETA based on rolling average
-            chapter_time = time.time() - chapter_start_time
-            chapter_times.append(chapter_time)
-            chapter_start_time = time.time()
+                    # Calculate ETA based on rolling average
+                    chapter_time = time.time() - chapter_start_time
+                    chapter_times.append(chapter_time)
+                    chapter_start_time = time.time()
 
-            if chapter_times:
-                avg_time = sum(chapter_times[-5:]) / len(chapter_times[-5:])
-                remaining = total_chapters - (i + 1)
-                eta_seconds = int(avg_time * remaining)
-                report(
-                    "processing_chapters",
-                    chapter_pct,
-                    eta_seconds=eta_seconds,
-                    current_chapter=i + 1,
-                    total_chapters=total_chapters,
-                    chapter_title=ch.get("title", ""),
-                )
+                    if chapter_times:
+                        avg_time = sum(chapter_times[-5:]) / len(chapter_times[-5:])
+                        remaining = total_chapters - (i + 1)
+                        eta_seconds = int(avg_time * remaining)
+                        report(
+                            "processing_chapters",
+                            chapter_pct,
+                            eta_seconds=eta_seconds,
+                            current_chapter=i + 1,
+                            total_chapters=total_chapters,
+                            chapter_title=ch.get("title", ""),
+                        )
+            except BaseException:
+                # Don't keep fetching the remaining chapters after a failure/cancel.
+                pool.shutdown(wait=False, cancel_futures=True)
+                raise
 
         # Phase 5: Download assets
         report("downloading_assets", 80, eta_seconds=None)

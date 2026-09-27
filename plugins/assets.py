@@ -1,7 +1,10 @@
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
+import config
 from utils import image_filename
 
 from .base import Plugin
@@ -13,7 +16,7 @@ class AssetsPlugin(Plugin):
             return True
 
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        content = self.http.get_bytes(url)
+        content = self.http.get_bytes(url, lane="asset")
         save_path.write_bytes(content)
         return True
 
@@ -22,7 +25,7 @@ class AssetsPlugin(Plugin):
             return True
 
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        content = self.http.get_text(url)
+        content = self.http.get_text(url, lane="asset")
         save_path.write_text(content, encoding='utf-8')
         return True
 
@@ -35,7 +38,8 @@ class AssetsPlugin(Plugin):
         downloaded = {}
         failed = []
         total = len(urls)
-        for i, url in enumerate(urls):
+
+        def fetch(url: str):
             filename = image_filename(url)
             save_path = output_dir / "Images" / filename
             try:
@@ -46,8 +50,8 @@ class AssetsPlugin(Plugin):
                 # book. Skip it, keep going, and report the count at the end.
                 failed.append(url)
                 print(f"[assets] skipping image after retries: {filename} ({e})")
-            if progress_callback:
-                progress_callback(i + 1, total)
+
+        self._run_parallel(urls, fetch, progress_callback)
         if failed:
             print(f"[assets] {len(failed)}/{total} images could not be downloaded and were skipped")
         return downloaded
@@ -59,14 +63,41 @@ class AssetsPlugin(Plugin):
         progress_callback: Callable[[int, int], None] | None = None,
     ) -> dict[str, Path]:
         downloaded = {}
-        total = len(urls)
-        for i, url in enumerate(urls):
+        indexed = list(enumerate(urls))
+
+        def fetch(item: tuple[int, str]):
+            i, url = item
             save_path = output_dir / "Styles" / f"Style{i:02d}.css"
             self.download_css(url, save_path)
             downloaded[url] = save_path
-            if progress_callback:
-                progress_callback(i + 1, total)
+
+        self._run_parallel(indexed, fetch, progress_callback)
         return downloaded
+
+    @staticmethod
+    def _run_parallel(items: list, fn: Callable, progress_callback: Callable[[int, int], None] | None):
+        """Run fn over items with DOWNLOAD_WORKERS threads, reporting progress.
+
+        The HTTP client's shared rate limiter still spaces the requests; the
+        pool only overlaps network latency. The first exception raised by fn
+        propagates after in-flight work finishes.
+        """
+        total = len(items)
+        completed = 0
+        lock = threading.Lock()
+
+        def run(item):
+            nonlocal completed
+            fn(item)
+            with lock:
+                completed += 1
+                done = completed
+            if progress_callback:
+                progress_callback(done, total)
+
+        with ThreadPoolExecutor(max_workers=config.DOWNLOAD_WORKERS) as pool:
+            for future in [pool.submit(run, item) for item in items]:
+                future.result()
 
     def download_css_assets(self, css_urls: list[str], oebps: Path):
         """Download assets referenced by url() in CSS files."""
